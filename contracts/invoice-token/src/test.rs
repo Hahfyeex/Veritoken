@@ -1,6 +1,7 @@
 #![cfg(test)]
 
 use crate::{InvoiceMeta, InvoiceToken, InvoiceTokenClient};
+use compliance_engine::{ComplianceEngine, ComplianceEngineClient};
 use kyc_registry::{KycRegistry, KycRegistryClient};
 use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
@@ -8,6 +9,7 @@ struct Harness {
     env: Env,
     token: InvoiceTokenClient<'static>,
     kyc: KycRegistryClient<'static>,
+    compliance: ComplianceEngineClient<'static>,
     verifier: Address,
 }
 
@@ -35,7 +37,10 @@ fn setup() -> Harness {
     let verifier = Address::generate(&env);
     kyc.add_verifier(&verifier);
 
-    let compliance_id = env.register(KycRegistry, ()); // placeholder address; unused by invoice token
+    let compliance_id = env.register(ComplianceEngine, ());
+    let compliance = ComplianceEngineClient::new(&env, &compliance_id);
+    compliance.initialize(&admin);
+
     let token_id = env.register(InvoiceToken, ());
     let token = InvoiceTokenClient::new(&env, &token_id);
     token.initialize(&admin, &kyc_id, &compliance_id, &meta(&env));
@@ -44,6 +49,7 @@ fn setup() -> Harness {
         env,
         token,
         kyc,
+        compliance,
         verifier,
     }
 }
@@ -123,4 +129,28 @@ fn test_redeem_insufficient_balance() {
     h.token.issue(&holder, &100);
     h.token.settle();
     assert!(h.token.try_redeem(&holder, &101).is_err());
+}
+
+#[test]
+fn test_redeem_blocked_for_blocklisted_holder() {
+    let h = setup();
+    let holder = Address::generate(&h.env);
+    h.approve_kyc(&holder);
+    h.token.issue(&holder, &100);
+    h.token.settle();
+    h.compliance.add_to_blocklist(&holder);
+
+    assert!(h.token.try_redeem(&holder, &50).is_err());
+}
+
+#[test]
+fn test_redeem_blocked_when_compliance_paused() {
+    let h = setup();
+    let holder = Address::generate(&h.env);
+    h.approve_kyc(&holder);
+    h.token.issue(&holder, &100);
+    h.token.settle();
+    h.compliance.pause();
+
+    assert!(h.token.try_redeem(&holder, &50).is_err());
 }
