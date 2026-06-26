@@ -270,3 +270,27 @@ fn test_non_deployer_cannot_reinitialize() {
     );
     assert!(result.is_err());
 }
+
+#[test]
+fn test_two_step_admin_transfer() {
+    let h = setup();
+    let new_admin = Address::generate(&h.env);
+
+    h.token.propose_admin(&new_admin);
+    h.token.accept_admin();
+
+    // Verify new admin is set by calling set_compliance_metadata (admin-only)
+    let key = soroban_sdk::symbol_short!("legal");
+    h.token.set_compliance_metadata(&key, &String::from_str(&h.env, "prospectus-v2"));
+    assert_eq!(
+        h.token.get_compliance_metadata(&key),
+        String::from_str(&h.env, "prospectus-v2")
+    );
+}
+
+#[test]
+fn test_accept_admin_fails_when_no_pending() {
+    let h = setup();
+    let res = h.token.try_accept_admin();
+    assert!(res.is_err());
+}

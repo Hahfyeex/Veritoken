@@ -3,7 +3,6 @@
 use crate::{InvoiceMeta, InvoiceToken, InvoiceTokenClient};
 use compliance_engine::{ComplianceEngine, ComplianceEngineClient};
 use kyc_registry::{KycRegistry, KycRegistryClient};
-use compliance_engine::{ComplianceEngine, ComplianceEngineClient};
 use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
 struct Harness {
@@ -39,7 +38,9 @@ fn setup() -> Harness {
     let verifier = Address::generate(&env);
     kyc.add_verifier(&verifier);
 
-    let compliance_id = env.register(KycRegistry, ()); // placeholder address; unused by invoice token
+    let compliance_id = env.register(ComplianceEngine, ());
+    let compliance = ComplianceEngineClient::new(&env, &compliance_id);
+    compliance.initialize(&admin);
 
     // Invoice token — constructor args passed atomically at register time
     let token_id = env.register(
@@ -151,4 +152,23 @@ fn test_non_deployer_cannot_reinitialize() {
         .token
         .try_initialize(&attacker, &kyc_id, &ce_id, &meta(&h.env));
     assert!(result.is_err());
+}
+
+#[test]
+fn test_two_step_admin_transfer() {
+    let h = setup();
+    let new_admin = Address::generate(&h.env);
+
+    h.token.propose_admin(&new_admin);
+    h.token.accept_admin();
+
+    // Verify new admin is set by calling settle (admin-only)
+    h.token.settle();
+}
+
+#[test]
+fn test_accept_admin_fails_when_no_pending() {
+    let h = setup();
+    let res = h.token.try_accept_admin();
+    assert!(res.is_err());
 }

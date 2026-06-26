@@ -14,6 +14,7 @@ use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, E
 #[contracttype]
 pub enum DataKey {
     Admin,
+    PendingAdmin,
     KycRegistry,
     ComplianceEngine,
     InvoiceMeta,
@@ -90,6 +91,21 @@ impl InvoiceToken {
         panic!("already initialized");
     }
 
+    pub fn propose_admin(env: Env, new_admin: Address) {
+        Self::require_admin(&env);
+        env.storage().instance().set(&DataKey::PendingAdmin, &new_admin);
+        env.events().publish((symbol_short!("proposed"),), new_admin);
+    }
+
+    pub fn accept_admin(env: Env) {
+        let pending: Address = env.storage().instance().get(&DataKey::PendingAdmin).expect("no pending admin");
+        pending.require_auth();
+        let old_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        env.storage().instance().set(&DataKey::Admin, &pending);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.events().publish((symbol_short!("admin_set"),), (old_admin, pending));
+    }
+
     // ── Metadata ─────────────────────────────────────────────────────────────
 
     pub fn get_meta(env: Env) -> InvoiceMeta {
@@ -128,7 +144,6 @@ impl InvoiceToken {
         env.storage()
             .persistent()
             .extend_ttl(&DataKey::Balance(to.clone()), THRESHOLD, BUMP);
-        Self::register_holder(&env, to.clone());
         let supply: i128 = env
             .storage()
             .instance()
@@ -364,6 +379,8 @@ mod compliance_iface {
     pub trait ComplianceEngine {
         fn get_rules(env: soroban_sdk::Env) -> super::compliance_engine::ComplianceRules;
         fn is_blocklisted(env: soroban_sdk::Env, addr: Address) -> bool;
+        fn can_transfer(env: soroban_sdk::Env, from: Address, to: Address, amount: i128) -> bool;
+        fn register_holder(env: soroban_sdk::Env, addr: Address);
     }
 }
 
@@ -383,14 +400,3 @@ mod compliance_engine {
 
 use compliance_iface::ComplianceEngineClient;
 use kyc_iface::KycRegistryClient;
-
-mod compliance_iface {
-    use soroban_sdk::{contractclient, Address};
-    #[contractclient(name = "ComplianceEngineClient")]
-    #[allow(dead_code)]
-    pub trait ComplianceEngine {
-        fn can_transfer(env: soroban_sdk::Env, from: Address, to: Address, amount: i128) -> bool;
-        fn register_holder(env: soroban_sdk::Env, addr: Address);
-    }
-}
-use compliance_iface::ComplianceEngineClient;

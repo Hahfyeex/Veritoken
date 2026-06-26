@@ -56,12 +56,31 @@ impl RwaToken {
 
     // ── Admin ────────────────────────────────────────────────────────────────
 
+    #[deprecated(since = "0.2.0", note = "Use propose_admin and accept_admin instead")]
     pub fn set_admin(env: Env, new_admin: Address) {
         let admin = admin::read_admin(&env);
         admin.require_auth();
         admin::write_admin(&env, &new_admin);
         env.events()
             .publish((symbol_short!("admin"),), (admin, new_admin));
+    }
+
+    pub fn propose_admin(env: Env, new_admin: Address) {
+        let admin = admin::read_admin(&env);
+        admin.require_auth();
+        admin::write_pending_admin(&env, &new_admin);
+        env.events()
+            .publish((symbol_short!("proposed"),), new_admin);
+    }
+
+    pub fn accept_admin(env: Env) {
+        let pending = admin::read_pending_admin(&env).expect("no pending admin");
+        pending.require_auth();
+        let old_admin = admin::read_admin(&env);
+        admin::write_admin(&env, &pending);
+        admin::remove_pending_admin(&env);
+        env.events()
+            .publish((symbol_short!("admin_set"),), (old_admin, pending));
     }
 
     // ── SEP-41 Token Interface ───────────────────────────────────────────────

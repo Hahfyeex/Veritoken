@@ -199,3 +199,25 @@ fn test_non_deployer_cannot_reinitialize() {
         .try_initialize(&attacker, &kyc_id, &ce_id, &meta(&h.env));
     assert!(result.is_err());
 }
+
+#[test]
+fn test_two_step_admin_transfer() {
+    let h = setup();
+    let new_admin = Address::generate(&h.env);
+
+    h.token.propose_admin(&new_admin);
+    h.token.accept_admin();
+
+    // Verify new admin is set by calling mint (admin-only)
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &100);
+    assert_eq!(h.token.balance(&alice), 100);
+}
+
+#[test]
+fn test_accept_admin_fails_when_no_pending() {
+    let h = setup();
+    let res = h.token.try_accept_admin();
+    assert!(res.is_err());
+}

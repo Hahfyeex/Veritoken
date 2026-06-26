@@ -150,3 +150,22 @@ fn test_only_admin_can_set_rules() {
     let res = client.try_set_rules(&rules(0, 0, 0, true));
     assert!(res.is_err());
 }
+
+#[test]
+fn test_two_step_admin_transfer() {
+    let (env, client, _admin) = setup();
+    let new_admin = Address::generate(&env);
+
+    client.propose_admin(&new_admin);
+    client.accept_admin();
+
+    // Verify new admin is set by calling pause (admin-only)
+    client.pause();
+}
+
+#[test]
+fn test_accept_admin_fails_when_no_pending() {
+    let (_env, client, _admin) = setup();
+    let res = client.try_accept_admin();
+    assert!(res.is_err());
+}

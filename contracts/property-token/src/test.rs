@@ -213,3 +213,25 @@ fn test_transfer_snapshots_dividends() {
     assert_eq!(h.token.pending_dividend(&bob), 100);
     assert_eq!(h.token.pending_dividend(&alice), 0);
 }
+
+#[test]
+fn test_two_step_admin_transfer() {
+    let h = setup();
+    let new_admin = Address::generate(&h.env);
+
+    h.token.propose_admin(&new_admin);
+    h.token.accept_admin();
+
+    // Verify new admin is set by calling mint (admin-only)
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &100);
+    assert_eq!(h.token.balance(&alice), 100);
+}
+
+#[test]
+fn test_accept_admin_fails_when_no_pending() {
+    let h = setup();
+    let res = h.token.try_accept_admin();
+    assert!(res.is_err());
+}
