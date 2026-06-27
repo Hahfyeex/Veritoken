@@ -354,3 +354,30 @@ fn test_update_compliance_engine_admin_only() {
     h.approve_kyc(&alice);
     assert!(h.token.try_mint(&alice, &10).is_err());
 }
+
+#[test]
+fn test_mint_exceeds_total_shares() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+
+    // Mint 900 shares to alice (total_shares = 1000)
+    h.token.mint(&alice, &900);
+    assert_eq!(h.token.balance(&alice), 900);
+
+    // Try to mint 150 to bob — would exceed 1000
+    let result = h.token.try_mint(&bob, &150);
+    assert!(result.is_err());
+
+    // Can mint 100 (900 + 100 = 1000, at limit)
+    h.token.mint(&bob, &100);
+    assert_eq!(h.token.balance(&bob), 100);
+
+    // Cannot mint 1 more
+    let charlie = Address::generate(&h.env);
+    h.approve_kyc(&charlie);
+    let result = h.token.try_mint(&charlie, &1);
+    assert!(result.is_err());
+}

@@ -193,6 +193,23 @@ impl PropertyToken {
         if shares <= 0 {
             panic_with_error!(env, PropertyError::NegativeShares);
         }
+        let total_shares: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalShares)
+            .expect("total shares must be set");
+        let mut outstanding: i128 = 0;
+        let holders: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::HolderList)
+            .unwrap_or_else(|| Vec::new(&env));
+        for holder in holders.iter() {
+            outstanding += Self::read_balance(&env, holder);
+        }
+        if outstanding + shares > total_shares {
+            panic!("exceeds authorized share count");
+        }
         Self::accrue(&env, to.clone());
         let bal = Self::read_balance(&env, to.clone());
         Self::write_balance(&env, to.clone(), bal + shares);
