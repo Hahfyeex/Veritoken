@@ -52,7 +52,8 @@ CE_ID=$(stellar contract deploy \
   $SOURCE \
   --wasm "$WASM_DIR/compliance_engine.wasm" \
   -- \
-  --admin "$ADMIN_ADDR")
+  --admin "$ADMIN_ADDR" \
+  --kyc-registry "$KYC_ID")
 echo "    COMPLIANCE_ENGINE_ID=$CE_ID"
 
 # Asset tokens pass all constructor args atomically — no separate initialize call needed or possible.
