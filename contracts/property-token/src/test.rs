@@ -173,6 +173,32 @@ fn test_dividend_distribution() {
 }
 
 #[test]
+fn test_multi_round_dividend_with_partial_transfer() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+
+    h.token.mint(&alice, &1_000);
+
+    // First dividend round: Alice owns all 1000 shares.
+    h.token.deposit_dividend(&1_000);
+
+    // Transfer 400 shares to Bob after the first round.
+    h.token.transfer(&alice, &bob, &400);
+
+    // Second dividend round: Alice owns 600, Bob owns 400.
+    h.token.deposit_dividend(&1_000);
+
+    let alice_claimed = h.token.claim_dividend(&alice);
+    let bob_claimed = h.token.claim_dividend(&bob);
+
+    assert_eq!(alice_claimed, 1_600);
+    assert_eq!(bob_claimed, 400);
+}
+
+#[test]
 fn test_deposit_dividend_requires_shares() {
     let h = setup();
     // total_shares is 1000 from meta, so deposit works even before mint.
@@ -478,10 +504,11 @@ fn test_buyback_non_admin_rejected() {
 
     // Attacker cannot buyback
     let env2 = Env::default();
+    let non_admin = Address::generate(&env2);
     let token_id2 = env2.register(
         PropertyToken,
         (
-            attacker.clone(),
+            Address::generate(&env2),
             Address::generate(&env2),
             Address::generate(&env2),
             meta(&env2),
@@ -489,8 +516,8 @@ fn test_buyback_non_admin_rejected() {
     );
     let client2 = PropertyTokenClient::new(&env2, &token_id2);
 
-    // Should fail because attacker is not the admin
-    assert!(client2.try_buyback(&alice, &50).is_err());
+    // Should fail because non_admin is not the admin
+    assert!(client2.try_buyback(&non_admin, &50).is_err());
 }
 
 #[test]
