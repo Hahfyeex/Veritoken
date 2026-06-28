@@ -14,6 +14,9 @@ use soroban_sdk::{
 #[repr(u32)]
 pub enum ComplianceError {
     AlreadyInitialized = 1,
+    MinHoldingPeriodExceeds365Days = 2,
+    NegativeMaxTransferAmount = 3,
+    MaxHoldersBelowCurrentCount = 4,
 }
 
 #[contracttype]
@@ -90,6 +93,22 @@ impl ComplianceEngine {
 
     pub fn set_rules(env: Env, rules: ComplianceRules) {
         Self::require_admin(&env);
+        if rules.min_holding_period > 31_536_000 {
+            panic_with_error!(env, ComplianceError::MinHoldingPeriodExceeds365Days);
+        }
+        if rules.max_transfer_amount < 0 {
+            panic_with_error!(env, ComplianceError::NegativeMaxTransferAmount);
+        }
+        if rules.max_holders > 0 {
+            let count: u32 = env
+                .storage()
+                .instance()
+                .get(&DataKey::HolderCount)
+                .unwrap_or(0);
+            if rules.max_holders < count {
+                panic_with_error!(env, ComplianceError::MaxHoldersBelowCurrentCount);
+            }
+        }
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         env.storage().instance().set(&DataKey::Rules, &rules);
         env.events().publish((symbol_short!("rules_set"),), ());

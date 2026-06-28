@@ -12,6 +12,7 @@ const NAV = [
   { to: "/carbon", label: "Carbon" },
   { to: "/kyc", label: "KYC" },
   { to: "/admin", label: "Admin" },
+  { to: "/deploy", label: "Deploy" },
 ];
 
 export default function Layout({ children }: { children: ReactNode }) {

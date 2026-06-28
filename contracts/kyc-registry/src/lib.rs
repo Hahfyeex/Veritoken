@@ -17,6 +17,7 @@ pub enum KycError {
     NotVerifier = 2,
     NotApproved = 3,
     NoRecord = 4,
+    InvalidJurisdiction = 5,
 }
 
 #[contracttype]
@@ -178,6 +179,7 @@ impl KycRegistry {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         verifier.require_auth();
         Self::require_verifier(&env, &verifier);
+        Self::validate_jurisdiction(&env, &jurisdiction);
         let record = KycRecord {
             status: KycStatus::Approved,
             verifier: verifier.clone(),
@@ -265,6 +267,17 @@ impl KycRegistry {
     }
 
     // ── Internals ────────────────────────────────────────────────────────────
+
+    fn validate_jurisdiction(env: &Env, jurisdiction: &String) {
+        if jurisdiction.len() != 2 {
+            panic_with_error!(env, KycError::InvalidJurisdiction);
+        }
+        let mut bytes = [0u8; 2];
+        jurisdiction.copy_into_slice(&mut bytes);
+        if bytes[0] < b'A' || bytes[0] > b'Z' || bytes[1] < b'A' || bytes[1] > b'Z' {
+            panic_with_error!(env, KycError::InvalidJurisdiction);
+        }
+    }
 
     fn require_admin(env: &Env) {
         let admin: Address = env

@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use crate::{KycRegistry, KycRegistryClient};
+use crate::{KycError, KycRegistry, KycRegistryClient};
 use soroban_sdk::{
     testutils::{storage::Instance, Address as _, Ledger},
     Address, Env, String,
@@ -202,4 +202,54 @@ fn test_accept_admin_fails_when_no_pending() {
     let (_env, client, _admin) = setup();
     let res = client.try_accept_admin();
     assert!(res.is_err());
+}
+
+#[test]
+fn test_approve_rejects_jurisdiction_too_long() {
+    let (env, client, _admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&verifier);
+    let res = client.try_approve(&verifier, &subject, &0, &0, &String::from_str(&env, "USA"));
+    assert_eq!(res, Err(Ok(KycError::InvalidJurisdiction)));
+}
+
+#[test]
+fn test_approve_rejects_jurisdiction_lowercase() {
+    let (env, client, _admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&verifier);
+    let res = client.try_approve(&verifier, &subject, &0, &0, &String::from_str(&env, "us"));
+    assert_eq!(res, Err(Ok(KycError::InvalidJurisdiction)));
+}
+
+#[test]
+fn test_approve_rejects_jurisdiction_with_digit() {
+    let (env, client, _admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&verifier);
+    let res = client.try_approve(&verifier, &subject, &0, &0, &String::from_str(&env, "U1"));
+    assert_eq!(res, Err(Ok(KycError::InvalidJurisdiction)));
+}
+
+#[test]
+fn test_approve_rejects_empty_jurisdiction() {
+    let (env, client, _admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&verifier);
+    let res = client.try_approve(&verifier, &subject, &0, &0, &String::from_str(&env, ""));
+    assert_eq!(res, Err(Ok(KycError::InvalidJurisdiction)));
+}
+
+#[test]
+fn test_approve_accepts_valid_iso_code() {
+    let (env, client, _admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&verifier);
+    client.approve(&verifier, &subject, &1, &0, &String::from_str(&env, "DE"));
+    assert!(client.is_approved(&subject));
 }

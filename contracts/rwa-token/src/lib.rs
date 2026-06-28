@@ -2,8 +2,8 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
 use soroban_sdk::{
-    contract, contractimpl, contracterror, panic_with_error, symbol_short, Address, Env, String,
-    Symbol,
+    contract, contractimpl, contracttype, contracterror, panic_with_error, symbol_short, Address,
+    Env, String, Symbol,
 };
 
 mod admin;
@@ -49,6 +49,7 @@ impl RwaToken {
         asset_type: String, // "invoice" | "property" | "carbon_credit"
         kyc_registry: Address,
         compliance_engine: Address,
+        compliance_metadata: Option<ComplianceMetadata>,
     ) {
         // Validate asset_type
         let valid_types = ["invoice", "property", "carbon_credit"];
@@ -63,6 +64,20 @@ impl RwaToken {
         kyc::write_kyc_registry(&env, &kyc_registry);
         compliance::write_compliance_engine(&env, &compliance_engine);
         balance::write_total_supply(&env, 0);
+        if let Some(meta) = compliance_metadata {
+            if let Some(v) = meta.legal_entity {
+                compliance::write_metadata(&env, Symbol::new(&env, META_LEGAL_ENTITY), v);
+            }
+            if let Some(v) = meta.governing_law {
+                compliance::write_metadata(&env, Symbol::new(&env, META_GOVERNING_LAW), v);
+            }
+            if let Some(v) = meta.isin {
+                compliance::write_metadata(&env, Symbol::new(&env, META_ISIN), v);
+            }
+            if let Some(v) = meta.prospectus_hash {
+                compliance::write_metadata(&env, Symbol::new(&env, META_PROSPECTUS_HASH), v);
+            }
+        }
     }
 
     /// Legacy entry point — always panics to prevent post-deploy initialization.
@@ -284,5 +299,18 @@ impl RwaToken {
 
     pub fn get_compliance_metadata(env: Env, key: Symbol) -> String {
         compliance::read_metadata(&env, key)
+    }
+
+    pub fn get_all_compliance_metadata(env: Env) -> ComplianceMetadata {
+        let read = |key: &str| {
+            let v = compliance::read_metadata(&env, Symbol::new(&env, key));
+            if v.len() > 0 { Some(v) } else { None }
+        };
+        ComplianceMetadata {
+            legal_entity: read(META_LEGAL_ENTITY),
+            governing_law: read(META_GOVERNING_LAW),
+            isin: read(META_ISIN),
+            prospectus_hash: read(META_PROSPECTUS_HASH),
+        }
     }
 }

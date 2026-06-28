@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use crate::{RwaToken, RwaTokenClient};
+use crate::{ComplianceMetadata, RwaToken, RwaTokenClient, META_ISIN, META_LEGAL_ENTITY};
 use compliance_engine::{ComplianceEngine, ComplianceEngineClient, ComplianceRules};
 use kyc_registry::{KycRegistry, KycRegistryClient};
 use soroban_sdk::{testutils::Address as _, Address, Env, IntoVal, String};
@@ -43,6 +43,7 @@ fn setup() -> Harness {
             String::from_str(&env, "property"),
             kyc_id.clone(),
             compliance_id.clone(),
+            Option::<ComplianceMetadata>::None,
         ),
     );
     let token = RwaTokenClient::new(&env, &token_id);
@@ -302,6 +303,80 @@ fn test_non_deployer_cannot_reinitialize() {
         &ce_id,
     );
     assert!(result.is_err());
+}
+
+#[test]
+fn test_get_all_compliance_metadata_returns_empty_when_unset() {
+    let h = setup();
+    let meta = h.token.get_all_compliance_metadata();
+    assert!(meta.legal_entity.is_none());
+    assert!(meta.governing_law.is_none());
+    assert!(meta.isin.is_none());
+    assert!(meta.prospectus_hash.is_none());
+}
+
+#[test]
+fn test_get_all_compliance_metadata_returns_set_fields() {
+    let h = setup();
+    let key_entity = soroban_sdk::Symbol::new(&h.env, META_LEGAL_ENTITY);
+    let key_isin = soroban_sdk::Symbol::new(&h.env, META_ISIN);
+    h.token
+        .set_compliance_metadata(&key_entity, &String::from_str(&h.env, "Acme Corp"));
+    h.token
+        .set_compliance_metadata(&key_isin, &String::from_str(&h.env, "US1234567890"));
+    let meta = h.token.get_all_compliance_metadata();
+    assert_eq!(
+        meta.legal_entity,
+        Some(String::from_str(&h.env, "Acme Corp"))
+    );
+    assert_eq!(meta.isin, Some(String::from_str(&h.env, "US1234567890")));
+    assert!(meta.governing_law.is_none());
+    assert!(meta.prospectus_hash.is_none());
+}
+
+#[test]
+fn test_constructor_sets_compliance_metadata() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+
+    let kyc_id = env.register(KycRegistry, ());
+    let kyc = KycRegistryClient::new(&env, &kyc_id);
+    kyc.initialize(&admin);
+
+    let compliance_id = env.register(ComplianceEngine, ());
+    let compliance = ComplianceEngineClient::new(&env, &compliance_id);
+    compliance.initialize(&admin, &kyc_id);
+
+    let token_id = env.register(
+        RwaToken,
+        (
+            admin.clone(),
+            7u32,
+            String::from_str(&env, "Invoice Token"),
+            String::from_str(&env, "IVTK"),
+            String::from_str(&env, "invoice"),
+            kyc_id.clone(),
+            compliance_id.clone(),
+            Some(ComplianceMetadata {
+                legal_entity: Some(String::from_str(&env, "Issuer LLC")),
+                governing_law: Some(String::from_str(&env, "New York")),
+                isin: None,
+                prospectus_hash: None,
+            }),
+        ),
+    );
+    let token = RwaTokenClient::new(&env, &token_id);
+    let meta = token.get_all_compliance_metadata();
+    assert_eq!(
+        meta.legal_entity,
+        Some(String::from_str(&env, "Issuer LLC"))
+    );
+    assert_eq!(
+        meta.governing_law,
+        Some(String::from_str(&env, "New York"))
+    );
+    assert!(meta.isin.is_none());
 }
 
 #[test]
