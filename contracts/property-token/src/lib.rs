@@ -531,10 +531,28 @@ impl PropertyToken {
 
     pub fn holder_count(env: Env) -> u32 {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        env.storage()
+        let engine: Address = env
+            .storage()
             .instance()
-            .get(&DataKey::HolderCount)
-            .unwrap_or(0)
+            .get(&DataKey::ComplianceEngine)
+            .expect("compliance engine must be set");
+        ComplianceEngineClient::new(&env, &engine).holder_count()
+    }
+
+    pub fn holder_slots_remaining(env: Env) -> u32 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        let engine: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::ComplianceEngine)
+            .expect("compliance engine must be set");
+        let client = ComplianceEngineClient::new(&env, &engine);
+        let rules = client.get_rules();
+        if rules.max_holders == 0 {
+            return u32::MAX;
+        }
+        let count = client.holder_count();
+        rules.max_holders.saturating_sub(count)
     }
 
     pub fn balance(env: Env, id: Address) -> i128 {
@@ -788,6 +806,7 @@ mod compliance_iface {
         fn is_blocklisted(env: soroban_sdk::Env, addr: Address) -> bool;
         fn can_transfer(env: soroban_sdk::Env, from: Address, to: Address, amount: i128) -> bool;
         fn register_holder(env: soroban_sdk::Env, addr: Address);
+        fn holder_count(env: soroban_sdk::Env) -> u32;
     }
 }
 
@@ -802,6 +821,7 @@ mod compliance_engine {
         pub max_holders: u32,
         pub require_same_jurisdiction: bool,
         pub paused: bool,
+        pub allowlist_mode: bool,
     }
 }
 

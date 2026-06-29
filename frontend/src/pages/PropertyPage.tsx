@@ -5,11 +5,14 @@ import { useAmountValidation } from "../lib/validation";
 import { PageHeader, Card, Field, Select, Icon } from "../components/ui";
 import WalletGuard from "../components/WalletGuard";
 import { useToast } from "../lib/toast";
+import { contracts } from "../lib/contracts";
 import type { ContractEvent } from "../types";
 
 export default function PropertyPage() {
   const {} = useWallet();
   const { addToast } = useToast();
+  const [holderCount, setHolderCount] = useState<number | null>(null);
+  const [holderSlotsRemaining, setHolderSlotsRemaining] = useState<number | null>(null);
   const [form, setForm] = useState({
     property_id: "",
     legal_name: "",
@@ -35,6 +38,16 @@ export default function PropertyPage() {
       .then(setEvents)
       .catch(() => {})
       .finally(() => setEventsLoading(false));
+
+    Promise.all([
+      contracts.property.holderCount(),
+      contracts.property.holderSlotsRemaining(),
+    ])
+      .then(([count, slots]) => {
+        setHolderCount(count);
+        setHolderSlotsRemaining(slots);
+      })
+      .catch(() => {});
   }, []);
 
   const handleChange = (
@@ -93,6 +106,22 @@ export default function PropertyPage() {
         description="Fractionalize real estate. Each share equals one unit of ownership, and dividends distribute pro-rata on-chain."
       />
       <WalletGuard>
+          {holderCount !== null && (
+          <Card title="Shareholder Cap" style={{ marginBottom: "1rem" }}>
+            <div style={{ display: "flex", gap: "2rem", flexWrap: "wrap" }}>
+              <div>
+                <div className="muted" style={{ fontSize: "0.75rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>Current Holders</div>
+                <div style={{ fontSize: "1.5rem", fontWeight: 700 }}>{holderCount}</div>
+              </div>
+              <div>
+                <div className="muted" style={{ fontSize: "0.75rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>Slots Remaining</div>
+                <div style={{ fontSize: "1.5rem", fontWeight: 700 }}>
+                  {holderSlotsRemaining === 4294967295 ? "∞" : holderSlotsRemaining}
+                </div>
+              </div>
+            </div>
+          </Card>
+        )}
         <Card>
           <form onSubmit={handleTokenize}>
             <Field

@@ -67,6 +67,24 @@ export class PropertyTokenClient {
     );
   }
 
+  /** Returns the number of distinct shareholders registered in the compliance engine. */
+  async holderCount(): Promise<number> {
+    return readCall<number>(this.server, this.contractId, "holder_count", []);
+  }
+
+  /**
+   * Returns how many shareholder slots remain before the max_holders cap is
+   * reached. Returns Number.MAX_SAFE_INTEGER when the cap is unlimited (0).
+   */
+  async holderSlotsRemaining(): Promise<number> {
+    return readCall<number>(
+      this.server,
+      this.contractId,
+      "holder_slots_remaining",
+      []
+    );
+  }
+
   /**
    * Returns the pending (unclaimed) dividend balance for `holder` in stroops.
    * This is a read-only call and does not submit a transaction.

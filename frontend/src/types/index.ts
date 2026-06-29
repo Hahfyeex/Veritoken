@@ -65,6 +65,7 @@ export interface ComplianceRules {
   max_holders: number;
   require_same_jurisdiction: boolean;
   paused: boolean;
+  allowlist_mode: boolean;
 }
 
 export interface ContractEvent {

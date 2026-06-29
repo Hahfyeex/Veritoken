@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { Icon } from "../components/ui";
 import { contracts } from "../lib/contracts/index";
 import { CONTRACT_IDS } from "../lib/stellar";
+import StatusCard from "../components/StatusCard";
 
 const CARDS = [
   {
@@ -163,6 +164,9 @@ export default function Dashboard() {
           )}
         </section>
       )}
+
+      {/* My Status */}
+      <StatusCard />
 
       {/* Asset modules */}
       <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", margin: "0.5rem 0 1.1rem" }}>
