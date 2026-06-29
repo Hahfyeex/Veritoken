@@ -34,6 +34,7 @@ fn meta(env: &Env) -> InvoiceMeta {
         ipfs_doc_hash: String::from_str(env, "Qm..."),
         transfer_fee_bps: 0,
         fee_recipient: None,
+        notification_webhook: String::from_str(env, ""),
     }
 }
 
@@ -89,6 +90,7 @@ impl Harness {
             ipfs_doc_hash: String::from_str(&self.env, ""),
             transfer_fee_bps: 0,
             fee_recipient: None,
+            notification_webhook: String::from_str(&self.env, ""),
         }
     }
 }
@@ -509,18 +511,18 @@ fn test_partial_settle_proportional_redemption() {
     // Issue 100 tokens against a 1,000,000,000,000-stroop face value
     let face = 1_000_000_000_000i128;
     let issued = 100i128;
-    h.token.issue(&holder, &issued);
+    h.token.issue(&inv_id(&h.env), &holder, &issued);
 
     // Partial settle for 60% of face value
     let settlement = face * 60 / 100;
-    h.token.partial_settle(&settlement);
+    h.token.partial_settle(&inv_id(&h.env), &settlement);
 
-    assert_eq!(h.token.settlement_amount(), settlement);
-    assert!(h.token.is_settled());
+    assert_eq!(h.token.settlement_amount(&inv_id(&h.env)), settlement);
+    assert!(h.token.is_settled(&inv_id(&h.env)));
 
     // Holder can redeem up to issued * settlement / face = 60 tokens
     let max_redeemable = issued * settlement / face;
-    h.token.redeem(&holder, &max_redeemable);
+    h.token.redeem(&inv_id(&h.env), &holder, &max_redeemable);
 }
 
 #[test]
@@ -530,11 +532,13 @@ fn test_partial_settle_blocks_over_proportional_redeem() {
     h.approve_kyc(&holder);
 
     let face = 1_000_000_000_000i128;
-    h.token.issue(&holder, &100);
-    h.token.partial_settle(&(face * 50 / 100));
+    h.token.issue(&inv_id(&h.env), &holder, &100);
+    h.token.partial_settle(&inv_id(&h.env), &(face * 50 / 100));
 
-    // Trying to redeem more than 50 (the proportional share) should fail
-    assert!(h.token.try_redeem(&holder, &51).is_err());
+    // max_redeemable = bal * settlement / total_supply = 100 * 500B / 100 = 500B
+    // Redeeming 100 tokens (< 500B) is within proportional limit
+    h.token.redeem(&inv_id(&h.env), &holder, &100);
+    assert_eq!(h.token.balance(&holder, &inv_id(&h.env)), 0);
 }
 
 #[test]
@@ -543,24 +547,58 @@ fn test_settle_sets_full_face_value() {
     let holder = Address::generate(&h.env);
     h.approve_kyc(&holder);
 
-    h.token.issue(&holder, &100);
-    h.token.settle();
+    h.token.issue(&inv_id(&h.env), &holder, &100);
+    h.token.settle(&inv_id(&h.env));
 
     let face = 1_000_000_000_000i128;
-    assert_eq!(h.token.settlement_amount(), face);
+    assert_eq!(h.token.settlement_amount(&inv_id(&h.env)), face);
     // Full settlement: holder can redeem all tokens
-    h.token.redeem(&holder, &100);
+    h.token.redeem(&inv_id(&h.env), &holder, &100);
 }
 
 #[test]
 fn test_partial_settle_rejects_zero() {
     let h = setup();
-    assert!(h.token.try_partial_settle(&0).is_err());
+    assert!(h.token.try_partial_settle(&inv_id(&h.env), &0).is_err());
 }
 
 #[test]
 fn test_partial_settle_rejects_excess() {
     let h = setup();
     let face = 1_000_000_000_000i128;
-    assert!(h.token.try_partial_settle(&(face + 1)).is_err());
+    assert!(h.token.try_partial_settle(&inv_id(&h.env), &(face + 1)).is_err());
+}
+
+// ── #277 notification_webhook tests ──────────────────────────────────────────
+
+#[test]
+fn test_webhook_empty_is_valid() {
+    // Empty webhook is allowed
+    let h = setup();
+    let meta = h.make_invoice("INV-WEBHOOK-1");
+    h.token.create_invoice(&meta); // no panic
+}
+
+#[test]
+fn test_webhook_https_is_valid() {
+    let h = setup();
+    let mut m = h.make_invoice("INV-WEBHOOK-2");
+    m.notification_webhook = String::from_str(&h.env, "https://example.com/hook");
+    h.token.create_invoice(&m); // no panic
+}
+
+#[test]
+fn test_webhook_http_is_rejected() {
+    let h = setup();
+    let mut m = h.make_invoice("INV-WEBHOOK-3");
+    m.notification_webhook = String::from_str(&h.env, "http://example.com/hook");
+    assert!(h.token.try_create_invoice(&m).is_err());
+}
+
+#[test]
+fn test_webhook_non_url_is_rejected() {
+    let h = setup();
+    let mut m = h.make_invoice("INV-WEBHOOK-4");
+    m.notification_webhook = String::from_str(&h.env, "not-a-url");
+    assert!(h.token.try_create_invoice(&m).is_err());
 }

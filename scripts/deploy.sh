@@ -67,7 +67,7 @@ INV_ID=$(stellar contract deploy \
   --admin "$ADMIN_ADDR" \
   --kyc-registry "$KYC_ID" \
   --compliance-engine "$CE_ID" \
-  --meta '{"invoice_id":"PLACEHOLDER","issuer":"","debtor":"","face_value_usd":0,"discount_rate_bps":0,"due_date":0,"currency":"USD","ipfs_doc_hash":""}')
+  --meta '{"invoice_id":"PLACEHOLDER","issuer":"","debtor":"","face_value_usd":0,"discount_rate_bps":0,"due_date":0,"currency":"USD","ipfs_doc_hash":"","transfer_fee_bps":0,"fee_recipient":null,"notification_webhook":""}')
 echo "    INVOICE_TOKEN_ID=$INV_ID"
 
 echo "==> Deploying Property Token..."
