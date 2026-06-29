@@ -19,11 +19,11 @@ fn setup() -> (Env, KycRegistryClient<'static>, Address) {
 
 #[test]
 fn test_add_verifier_and_approve() {
-    let (env, client, _admin) = setup();
+    let (env, client, admin) = setup();
     let verifier = Address::generate(&env);
     let subject = Address::generate(&env);
 
-    client.add_verifier(&verifier);
+    client.add_verifier(&admin, &verifier);
     assert!(!client.is_approved(&subject));
 
     client.approve(&verifier, &subject, &1, &0, &String::from_str(&env, "US"));
@@ -51,10 +51,10 @@ fn test_unauthorized_verifier_cannot_approve() {
 
 #[test]
 fn test_expiry_makes_approval_inactive() {
-    let (env, client, _admin) = setup();
+    let (env, client, admin) = setup();
     let verifier = Address::generate(&env);
     let subject = Address::generate(&env);
-    client.add_verifier(&verifier);
+    client.add_verifier(&admin, &verifier);
 
     env.ledger().set_timestamp(1_000);
     client.approve(
@@ -73,10 +73,10 @@ fn test_expiry_makes_approval_inactive() {
 
 #[test]
 fn test_revoke_and_reject() {
-    let (env, client, _admin) = setup();
+    let (env, client, admin) = setup();
     let verifier = Address::generate(&env);
     let subject = Address::generate(&env);
-    client.add_verifier(&verifier);
+    client.add_verifier(&admin, &verifier);
     client.approve(&verifier, &subject, &0, &0, &String::from_str(&env, "US"));
     assert!(client.is_approved(&subject));
 
@@ -99,10 +99,10 @@ fn test_revoke_and_reject() {
 
 #[test]
 fn test_reject_without_existing_record_creates_terminal_record() {
-    let (env, client, _admin) = setup();
+    let (env, client, admin) = setup();
     let verifier = Address::generate(&env);
     let subject = Address::generate(&env);
-    client.add_verifier(&verifier);
+    client.add_verifier(&admin, &verifier);
 
     client.reject(&verifier, &subject);
 
@@ -117,10 +117,10 @@ fn test_reject_without_existing_record_creates_terminal_record() {
 
 #[test]
 fn test_revoke_without_existing_record_creates_terminal_record() {
-    let (env, client, _admin) = setup();
+    let (env, client, admin) = setup();
     let verifier = Address::generate(&env);
     let subject = Address::generate(&env);
-    client.add_verifier(&verifier);
+    client.add_verifier(&admin, &verifier);
 
     client.revoke(&verifier, &subject);
 
@@ -135,10 +135,10 @@ fn test_revoke_without_existing_record_creates_terminal_record() {
 
 #[test]
 fn test_remove_verifier() {
-    let (env, client, _admin) = setup();
+    let (env, client, admin) = setup();
     let verifier = Address::generate(&env);
-    client.add_verifier(&verifier);
-    client.remove_verifier(&verifier);
+    client.add_verifier(&admin, &verifier);
+    client.remove_verifier(&admin, &verifier);
 
     let subject = Address::generate(&env);
     let res = client.try_approve(&verifier, &subject, &0, &0, &String::from_str(&env, "US"));
@@ -147,25 +147,20 @@ fn test_remove_verifier() {
 
 #[test]
 fn test_instance_ttl_bump() {
-    let (env, client, _admin) = setup();
+    let (env, client, admin) = setup();
     let contract_id = client.address.clone();
 
-    // The constants defined in lib.rs:
-    // const DAY_IN_LEDGERS: u32 = 17280;
-    // const BUMP: u32 = 30 * DAY_IN_LEDGERS; // 518400 ledgers
+    // const DAY_IN_LEDGERS: u32 = 17280; const BUMP: u32 = 30 * DAY_IN_LEDGERS;
     let bump = 30 * 17280;
 
-    // Initially, calling add_verifier will bump the TTL to bump (518400 ledgers)
     let verifier = Address::generate(&env);
-    client.add_verifier(&verifier);
+    client.add_verifier(&admin, &verifier);
 
     let initial_ttl = env.as_contract(&contract_id, || {
         env.storage().instance().get_ttl()
     });
     assert_eq!(initial_ttl, bump);
 
-    // Advance the ledger sequence to decrease TTL below THRESHOLD
-    // Let's advance by 30,000 ledgers.
     env.ledger().with_mut(|l| {
         l.sequence_number += 30_000;
     });
@@ -175,7 +170,6 @@ fn test_instance_ttl_bump() {
     });
     assert_eq!(reduced_ttl, initial_ttl - 30_000);
 
-    // Calling a query function like is_approved should bump it back to BUMP
     let subject = Address::generate(&env);
     client.is_approved(&subject);
 
@@ -187,15 +181,15 @@ fn test_instance_ttl_bump() {
 
 #[test]
 fn test_two_step_admin_transfer() {
-    let (env, client, _admin) = setup();
+    let (env, client, admin) = setup();
     let new_admin = Address::generate(&env);
 
-    client.propose_admin(&new_admin);
+    client.propose_admin(&admin, &new_admin);
     client.accept_admin();
 
-    // Verify new admin is set by calling add_verifier (admin-only)
+    // new_admin is now in the AdminList — add_verifier should succeed
     let verifier = Address::generate(&env);
-    client.add_verifier(&verifier);
+    client.add_verifier(&new_admin, &verifier);
 }
 
 #[test]
@@ -206,51 +200,98 @@ fn test_accept_admin_fails_when_no_pending() {
 }
 
 #[test]
-fn test_approve_rejects_jurisdiction_too_long() {
+fn test_add_and_remove_admin() {
+    let (env, client, admin) = setup();
+    let second_admin = Address::generate(&env);
+
+    client.add_admin(&admin, &second_admin);
+    let admins = client.get_admins();
+    assert_eq!(admins.len(), 2);
+
+    // second_admin can now add a verifier
+    let verifier = Address::generate(&env);
+    client.add_verifier(&second_admin, &verifier);
+
+    // remove second_admin
+    client.remove_admin(&admin, &second_admin);
+    let admins = client.get_admins();
+    assert_eq!(admins.len(), 1);
+
+    // second_admin can no longer add verifiers
+    let verifier2 = Address::generate(&env);
+    let res = client.try_add_verifier(&second_admin, &verifier2);
+    assert_eq!(res, Err(Ok(Error::from(KycError::NotAdmin))));
+}
+
+#[test]
+fn test_remove_last_admin_panics() {
+    let (env, client, admin) = setup();
+    let second = Address::generate(&env);
+    client.add_admin(&admin, &second);
+
+    // Remove admin, leaving second
+    client.remove_admin(&admin, &admin);
+
+    // Removing second (the last one) must fail
+    let res = client.try_remove_admin(&second, &second);
+    assert_eq!(res, Err(Ok(Error::from(KycError::EmptyAdminList))));
+}
+
+#[test]
+fn test_non_admin_cannot_add_verifier() {
     let (env, client, _admin) = setup();
+    let rogue = Address::generate(&env);
+    let verifier = Address::generate(&env);
+    let res = client.try_add_verifier(&rogue, &verifier);
+    assert_eq!(res, Err(Ok(Error::from(KycError::NotAdmin))));
+}
+
+#[test]
+fn test_approve_rejects_jurisdiction_too_long() {
+    let (env, client, admin) = setup();
     let verifier = Address::generate(&env);
     let subject = Address::generate(&env);
-    client.add_verifier(&verifier);
+    client.add_verifier(&admin, &verifier);
     let res = client.try_approve(&verifier, &subject, &0, &0, &String::from_str(&env, "USA"));
     assert_eq!(res, Err(Ok(Error::from(KycError::InvalidJurisdiction))));
 }
 
 #[test]
 fn test_approve_rejects_jurisdiction_lowercase() {
-    let (env, client, _admin) = setup();
+    let (env, client, admin) = setup();
     let verifier = Address::generate(&env);
     let subject = Address::generate(&env);
-    client.add_verifier(&verifier);
+    client.add_verifier(&admin, &verifier);
     let res = client.try_approve(&verifier, &subject, &0, &0, &String::from_str(&env, "us"));
     assert_eq!(res, Err(Ok(Error::from(KycError::InvalidJurisdiction))));
 }
 
 #[test]
 fn test_approve_rejects_jurisdiction_with_digit() {
-    let (env, client, _admin) = setup();
+    let (env, client, admin) = setup();
     let verifier = Address::generate(&env);
     let subject = Address::generate(&env);
-    client.add_verifier(&verifier);
+    client.add_verifier(&admin, &verifier);
     let res = client.try_approve(&verifier, &subject, &0, &0, &String::from_str(&env, "U1"));
     assert_eq!(res, Err(Ok(Error::from(KycError::InvalidJurisdiction))));
 }
 
 #[test]
 fn test_approve_rejects_empty_jurisdiction() {
-    let (env, client, _admin) = setup();
+    let (env, client, admin) = setup();
     let verifier = Address::generate(&env);
     let subject = Address::generate(&env);
-    client.add_verifier(&verifier);
+    client.add_verifier(&admin, &verifier);
     let res = client.try_approve(&verifier, &subject, &0, &0, &String::from_str(&env, ""));
     assert_eq!(res, Err(Ok(Error::from(KycError::InvalidJurisdiction))));
 }
 
 #[test]
 fn test_approve_accepts_valid_iso_code() {
-    let (env, client, _admin) = setup();
+    let (env, client, admin) = setup();
     let verifier = Address::generate(&env);
     let subject = Address::generate(&env);
-    client.add_verifier(&verifier);
+    client.add_verifier(&admin, &verifier);
     client.approve(&verifier, &subject, &1, &0, &String::from_str(&env, "DE"));
     assert!(client.is_approved(&subject));
 }

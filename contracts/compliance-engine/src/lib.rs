@@ -17,6 +17,8 @@ pub enum ComplianceError {
     MinHoldingPeriodExceeds365Days = 2,
     NegativeMaxTransferAmount = 3,
     MaxHoldersBelowCurrentCount = 4,
+    NoRulesPending = 5,
+    TooEarlyToActivate = 6,
 }
 
 #[contracttype]
@@ -25,6 +27,9 @@ pub enum DataKey {
     PendingAdmin,
     KycRegistry,
     Rules,
+    PendingRules,
+    PendingRulesActivateAt,
+    RuleChangeDelay,
     Blocklist,
     BlockedJurisdictions,
     MaxTransfer,
@@ -53,7 +58,10 @@ pub struct ComplianceEngine;
 
 #[contractimpl]
 impl ComplianceEngine {
-    pub fn initialize(env: Env, admin: Address, kyc_registry: Address) {
+    /// `rule_change_delay` is the minimum number of seconds that must pass
+    /// between a `propose_rules` call and a successful `activate_rules` call.
+    /// Use 0 to disable the time-lock (immediate activation).
+    pub fn initialize(env: Env, admin: Address, kyc_registry: Address, rule_change_delay: u64) {
         if env.storage().instance().has(&DataKey::Admin) {
             panic_with_error!(env, ComplianceError::AlreadyInitialized);
         }
@@ -62,6 +70,9 @@ impl ComplianceEngine {
         env.storage()
             .instance()
             .set(&DataKey::KycRegistry, &kyc_registry);
+        env.storage()
+            .instance()
+            .set(&DataKey::RuleChangeDelay, &rule_change_delay);
         let default_rules = ComplianceRules {
             max_transfer_amount: 0,
             min_holding_period: 0,
@@ -92,26 +103,56 @@ impl ComplianceEngine {
 
     // ── Rule management ──────────────────────────────────────────────────────
 
+    /// Propose new compliance rules with a time-lock delay.
+    /// The rules do not take effect until `activate_rules` is called after
+    /// the configured `rule_change_delay` has elapsed.
+    pub fn propose_rules(env: Env, new_rules: ComplianceRules) {
+        Self::require_admin(&env);
+        Self::validate_rules(&env, &new_rules);
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        let delay: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RuleChangeDelay)
+            .unwrap_or(0);
+        let activate_at = env.ledger().timestamp() + delay;
+        env.storage().instance().set(&DataKey::PendingRules, &new_rules);
+        env.storage().instance().set(&DataKey::PendingRulesActivateAt, &activate_at);
+        env.events().publish((symbol_short!("rules_prp"),), activate_at);
+    }
+
+    /// Activate previously proposed rules after the time-lock delay has passed.
+    /// Can be called by anyone once the delay has elapsed.
+    pub fn activate_rules(env: Env) {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        let activate_at: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingRulesActivateAt)
+            .unwrap_or_else(|| panic_with_error!(env, ComplianceError::NoRulesPending));
+        let now = env.ledger().timestamp();
+        if now < activate_at {
+            panic_with_error!(env, ComplianceError::TooEarlyToActivate);
+        }
+        let pending: ComplianceRules = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingRules)
+            .unwrap_or_else(|| panic_with_error!(env, ComplianceError::NoRulesPending));
+        env.storage().instance().set(&DataKey::Rules, &pending);
+        env.storage().instance().remove(&DataKey::PendingRules);
+        env.storage().instance().remove(&DataKey::PendingRulesActivateAt);
+        env.events().publish((symbol_short!("rules_act"),), ());
+    }
+
+    /// Emergency immediate rule update. Admin-only. Emits a warning event.
     pub fn set_rules(env: Env, rules: ComplianceRules) {
         Self::require_admin(&env);
-        if rules.min_holding_period > 31_536_000 {
-            panic_with_error!(env, ComplianceError::MinHoldingPeriodExceeds365Days);
-        }
-        if rules.max_transfer_amount < 0 {
-            panic_with_error!(env, ComplianceError::NegativeMaxTransferAmount);
-        }
-        if rules.max_holders > 0 {
-            let count: u32 = env
-                .storage()
-                .instance()
-                .get(&DataKey::HolderCount)
-                .unwrap_or(0);
-            if rules.max_holders < count {
-                panic_with_error!(env, ComplianceError::MaxHoldersBelowCurrentCount);
-            }
-        }
+        Self::validate_rules(&env, &rules);
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         env.storage().instance().set(&DataKey::Rules, &rules);
+        // Warning: bypasses the time-lock delay
+        env.events().publish((symbol_short!("rules_wrn"),), ());
         env.events().publish((symbol_short!("rules_set"),), ());
     }
 
@@ -207,8 +248,6 @@ impl ComplianceEngine {
 
     // ── Transfer validation ──────────────────────────────────────────────────
 
-    /// Called by asset tokens before every transfer. Returns true if the
-    /// transfer is compliant with all configured rules.
     pub fn can_transfer(env: Env, from: Address, to: Address, amount: i128) -> bool {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         let rules: ComplianceRules = env.storage().instance().get(&DataKey::Rules).unwrap();
@@ -280,7 +319,6 @@ impl ComplianceEngine {
         true
     }
 
-    /// Called by rwa-token after a mint or transfer to register a new holder.
     pub fn register_holder(env: Env, addr: Address) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         let key = DataKey::HolderSince(addr.clone());
@@ -301,7 +339,6 @@ impl ComplianceEngine {
         }
     }
 
-    /// Called by rwa-token after a transfer or burn that removes the last token from a holder.
     pub fn unregister_holder(env: Env, addr: Address) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         let key = DataKey::HolderSince(addr.clone());
@@ -338,10 +375,36 @@ impl ComplianceEngine {
         admin.require_auth();
     }
 
+    fn validate_rules(env: &Env, rules: &ComplianceRules) {
+        if rules.min_holding_period > 31_536_000 {
+            panic_with_error!(env, ComplianceError::MinHoldingPeriodExceeds365Days);
+        }
+        if rules.max_transfer_amount < 0 {
+            panic_with_error!(env, ComplianceError::NegativeMaxTransferAmount);
+        }
+        if rules.max_holders > 0 {
+            let count: u32 = env
+                .storage()
+                .instance()
+                .get(&DataKey::HolderCount)
+                .unwrap_or(0);
+            if rules.max_holders < count {
+                panic_with_error!(env, ComplianceError::MaxHoldersBelowCurrentCount);
+            }
+        }
+    }
+
     fn blocklist(env: &Env) -> Vec<Address> {
         env.storage()
             .instance()
             .get(&DataKey::Blocklist)
+            .unwrap_or_else(|| Vec::new(env))
+    }
+
+    fn blocked_jurisdictions(env: &Env) -> Vec<String> {
+        env.storage()
+            .instance()
+            .get(&DataKey::BlockedJurisdictions)
             .unwrap_or_else(|| Vec::new(env))
     }
 

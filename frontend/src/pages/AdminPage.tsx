@@ -4,6 +4,7 @@ import { useWallet } from "../lib/wallet";
 import { server, CONTRACT_IDS, NETWORK_PASSPHRASE, fetchContractEvents } from "../lib/stellar";
 import { PageHeader, Card, Field, Icon, Skeleton } from "../components/ui";
 import WalletGuard from "../components/WalletGuard";
+import ConfirmDialog from "../components/ConfirmDialog";
 import { useToast } from "../lib/toast";
 import type { ComplianceRules, ContractEvent } from "../types";
 
@@ -91,13 +92,43 @@ export default function AdminPage() {
     return () => { cancelled = true; };
   }, []);
 
+  const [confirm, setConfirm] = useState<{
+    title: string;
+    description: string;
+    onConfirm: () => void;
+  } | null>(null);
+
   const handleSaveRules = (e: React.FormEvent) => {
     e.preventDefault();
-    addToast("Compliance rules saved successfully.", "success");
+    setConfirm({
+      title: "Save Compliance Rules",
+      description: `This will update the global compliance rules on-chain. Max transfer: ${rules.max_transfer_amount}, Min holding: ${rules.min_holding_period}s, Max holders: ${rules.max_holders}.`,
+      onConfirm: () => {
+        addToast("Compliance rules saved successfully.", "success");
+        setConfirm(null);
+      },
+    });
   };
 
-  const handlePause = () => addToast("All transfers paused.", "info");
-  const handleUnpause = () => addToast("Transfers unpaused.", "success");
+  const handlePause = () =>
+    setConfirm({
+      title: "Pause All Transfers",
+      description: "This will immediately halt every token transfer across all asset contracts. Existing balances are unaffected.",
+      onConfirm: () => {
+        addToast("All transfers paused.", "info");
+        setConfirm(null);
+      },
+    });
+
+  const handleUnpause = () =>
+    setConfirm({
+      title: "Unpause Transfers",
+      description: "This will re-enable token transfers across all asset contracts.",
+      onConfirm: () => {
+        addToast("Transfers unpaused.", "success");
+        setConfirm(null);
+      },
+    });
 
   return (
     <div className="form-narrow">
@@ -177,6 +208,15 @@ export default function AdminPage() {
       </WalletGuard>
 
       <RecentTransactions events={events} loading={eventsLoading} />
+
+      {confirm && (
+        <ConfirmDialog
+          title={confirm.title}
+          description={confirm.description}
+          onConfirm={confirm.onConfirm}
+          onCancel={() => setConfirm(null)}
+        />
+      )}
     </div>
   );
 }

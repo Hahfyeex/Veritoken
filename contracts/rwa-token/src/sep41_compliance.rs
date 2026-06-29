@@ -26,12 +26,12 @@ fn setup_sep41() -> Sep41Harness {
     let kyc = KycRegistryClient::new(&env, &kyc_id);
     kyc.initialize(&admin);
     let verifier = Address::generate(&env);
-    kyc.add_verifier(&verifier);
+    kyc.add_verifier(&admin, &verifier);
 
     // Compliance engine
     let compliance_id = env.register(ComplianceEngine, ());
     let compliance = ComplianceEngineClient::new(&env, &compliance_id);
-    compliance.initialize(&admin, &kyc_id);
+    compliance.initialize(&admin, &kyc_id, &0u64);
 
     // RWA token
     let token_id = env.register(

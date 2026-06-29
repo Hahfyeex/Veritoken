@@ -18,11 +18,13 @@ pub enum KycError {
     NotApproved = 3,
     NoRecord = 4,
     InvalidJurisdiction = 5,
+    NotAdmin = 6,
+    EmptyAdminList = 7,
 }
 
 #[contracttype]
 pub enum DataKey {
-    Admin,
+    AdminList,
     PendingAdmin,
     KycStatus(Address),
     VerifierList,
@@ -74,40 +76,87 @@ pub struct KycRegistry;
 #[contractimpl]
 impl KycRegistry {
     pub fn initialize(env: Env, admin: Address) {
-        if env.storage().instance().has(&DataKey::Admin) {
+        if env.storage().instance().has(&DataKey::AdminList) {
             panic_with_error!(env, KycError::AlreadyInitialized);
         }
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        env.storage().instance().set(&DataKey::Admin, &admin);
+        let mut list: Vec<Address> = Vec::new(&env);
+        list.push_back(admin);
+        env.storage().instance().set(&DataKey::AdminList, &list);
     }
 
-    pub fn propose_admin(env: Env, new_admin: Address) {
+    // ── Admin management ─────────────────────────────────────────────────────
+
+    /// Propose a new admin (two-step handover). Requires existing admin auth.
+    pub fn propose_admin(env: Env, caller: Address, new_admin: Address) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        Self::require_admin(&env);
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
         env.storage().instance().set(&DataKey::PendingAdmin, &new_admin);
         env.events().publish((symbol_short!("proposed"),), new_admin);
     }
 
+    /// The pending admin accepts and is added to the AdminList.
     pub fn accept_admin(env: Env) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         let pending: Address = env.storage().instance().get(&DataKey::PendingAdmin).expect("no pending admin");
         pending.require_auth();
-        let old_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
-        env.storage().instance().set(&DataKey::Admin, &pending);
+        let mut list = Self::admin_list(&env);
+        if !list.contains(&pending) {
+            list.push_back(pending.clone());
+            env.storage().instance().set(&DataKey::AdminList, &list);
+        }
         env.storage().instance().remove(&DataKey::PendingAdmin);
-        env.events().publish((symbol_short!("admin_set"),), (old_admin, pending));
+        env.events().publish((symbol_short!("admin_add"),), pending);
+    }
+
+    /// Immediately add a new admin. Requires existing admin auth.
+    pub fn add_admin(env: Env, caller: Address, new_admin: Address) {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+        let mut list = Self::admin_list(&env);
+        if !list.contains(&new_admin) {
+            list.push_back(new_admin.clone());
+            env.storage().instance().set(&DataKey::AdminList, &list);
+        }
+        env.events().publish((symbol_short!("admin_add"),), new_admin);
+    }
+
+    /// Remove an admin from the list. Panics if it would leave the list empty.
+    pub fn remove_admin(env: Env, caller: Address, admin_to_remove: Address) {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+        let list = Self::admin_list(&env);
+        if list.len() <= 1 {
+            panic_with_error!(env, KycError::EmptyAdminList);
+        }
+        let mut new_list: Vec<Address> = Vec::new(&env);
+        for a in list.iter() {
+            if a != admin_to_remove {
+                new_list.push_back(a);
+            }
+        }
+        env.storage().instance().set(&DataKey::AdminList, &new_list);
+        env.events().publish((symbol_short!("admin_rem"),), admin_to_remove);
+    }
+
+    /// Returns the list of current admins.
+    pub fn get_admins(env: Env) -> Vec<Address> {
+        Self::admin_list(&env)
     }
 
     // ── Verifier management ──────────────────────────────────────────────────
 
-    pub fn add_verifier(env: Env, verifier: Address) {
+    pub fn add_verifier(env: Env, caller: Address, verifier: Address) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        Self::require_admin(&env);
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
         let mut list = Self::verifier_list(&env);
         if !list.contains(&verifier) {
             list.push_back(verifier.clone());
             env.storage().instance().set(&DataKey::VerifierList, &list);
-            // Increment the count only when a new entry is actually added.
             let count: u32 = env
                 .storage()
                 .instance()
@@ -122,9 +171,10 @@ impl KycRegistry {
         env.events().publish((symbol_short!("add_vrf"),), verifier);
     }
 
-    pub fn remove_verifier(env: Env, verifier: Address) {
+    pub fn remove_verifier(env: Env, caller: Address, verifier: Address) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        Self::require_admin(&env);
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
         let list = Self::verifier_list(&env);
         let mut new_list: Vec<Address> = Vec::new(&env);
         let mut removed = false;
@@ -295,13 +345,18 @@ impl KycRegistry {
         }
     }
 
-    fn require_admin(env: &Env) {
-        let admin: Address = env
-            .storage()
+    fn admin_list(env: &Env) -> Vec<Address> {
+        env.storage()
             .instance()
-            .get(&DataKey::Admin)
-            .expect("admin must be set");
-        admin.require_auth();
+            .get(&DataKey::AdminList)
+            .unwrap_or_else(|| Vec::new(env))
+    }
+
+    fn require_admin(env: &Env, caller: &Address) {
+        let list = Self::admin_list(env);
+        if !list.contains(caller) {
+            panic_with_error!(env, KycError::NotAdmin);
+        }
     }
 
     fn require_verifier(env: &Env, verifier: &Address) {

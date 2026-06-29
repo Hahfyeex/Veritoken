@@ -104,6 +104,24 @@ jobs:
       - name: Build WASM
         run: cargo build --release --target wasm32-unknown-unknown -p ${{ matrix.crate }}
 
+  frontend-test:
+    name: Frontend Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package.json
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm install
+      - name: Run frontend unit tests
+        working-directory: frontend
+        run: npm run test
+
   integration:
     name: Integration Tests
     runs-on: ubuntu-latest

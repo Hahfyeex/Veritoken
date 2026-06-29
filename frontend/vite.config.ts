@@ -1,3 +1,4 @@
+/// <reference types="vitest" />
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
@@ -10,6 +11,10 @@ export default defineConfig({
     alias: {
       "@": "/src",
     },
+  },
+  test: {
+    environment: "jsdom",
+    globals: true,
   },
   build: {
     // The Stellar SDK vendor chunk is unavoidably large; raise the budget so it

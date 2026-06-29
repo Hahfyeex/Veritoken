@@ -19,7 +19,8 @@ fn setup() -> (Env, ComplianceEngineClient<'static>, Address) {
 
     let contract_id = env.register(ComplianceEngine, ());
     let client = ComplianceEngineClient::new(&env, &contract_id);
-    client.initialize(&admin, &kyc_id);
+    // rule_change_delay=0 so set_rules / propose_rules tests remain synchronous
+    client.initialize(&admin, &kyc_id, &0u64);
     (env, client, admin)
 }
 
@@ -197,7 +198,7 @@ fn test_only_admin_can_set_rules() {
 
     let contract_id = env.register(ComplianceEngine, ());
     let client = ComplianceEngineClient::new(&env, &contract_id);
-    client.initialize(&admin, &kyc_id);
+    client.initialize(&admin, &kyc_id, &0u64);
 
     // Remove blanket auth — subsequent calls have no auth, so require_admin should fail
     env.set_auths(&[]);
@@ -222,11 +223,11 @@ fn setup_with_kyc_registry() -> (
     let kyc = KycRegistryClient::new(&env, &kyc_id);
     kyc.initialize(&admin);
     let verifier = Address::generate(&env);
-    kyc.add_verifier(&verifier);
+    kyc.add_verifier(&admin, &verifier);
 
     let ce_id = env.register(ComplianceEngine, ());
     let ce = ComplianceEngineClient::new(&env, &ce_id);
-    ce.initialize(&admin, &kyc_id);
+    ce.initialize(&admin, &kyc_id, &0u64);
 
     (env, ce, kyc, verifier, admin)
 }
@@ -299,7 +300,7 @@ fn test_require_same_jurisdiction_blocks_cross_jurisdiction_transfer() {
     let kyc = KycRegistryClient::new(&env, &kyc_id);
     kyc.initialize(&admin);
     let verifier = Address::generate(&env);
-    kyc.add_verifier(&verifier);
+    kyc.add_verifier(&admin, &verifier);
 
     let alice = Address::generate(&env);
     let bob = Address::generate(&env);
@@ -310,7 +311,7 @@ fn test_require_same_jurisdiction_blocks_cross_jurisdiction_transfer() {
 
     let ce_id = env.register(ComplianceEngine, ());
     let ce = ComplianceEngineClient::new(&env, &ce_id);
-    ce.initialize(&admin, &kyc_id);
+    ce.initialize(&admin, &kyc_id, &0u64);
 
     ce.set_rules(&ComplianceRules {
         max_transfer_amount: 0,
@@ -334,4 +335,63 @@ fn test_version_returns_nonempty() {
     let (_, client, _) = setup();
     let v = client.version();
     assert!(v.len() > 0);
+}
+
+// ── Time-locked rule change tests ────────────────────────────────────────────
+
+#[test]
+fn test_propose_rules_activates_after_delay() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+
+    let kyc_id = env.register(KycRegistry, ());
+    let kyc = KycRegistryClient::new(&env, &kyc_id);
+    kyc.initialize(&admin);
+
+    let contract_id = env.register(ComplianceEngine, ());
+    let client = ComplianceEngineClient::new(&env, &contract_id);
+    // 1000-second delay
+    client.initialize(&admin, &kyc_id, &1_000u64);
+
+    env.ledger().set_timestamp(5_000);
+    client.propose_rules(&rules(500, 0, 0, false));
+
+    // Too early: delay not yet elapsed
+    let res = client.try_activate_rules();
+    assert_eq!(res, Err(Ok(Error::from(ComplianceError::TooEarlyToActivate))));
+
+    // After delay: activation succeeds
+    env.ledger().set_timestamp(6_001);
+    client.activate_rules();
+
+    let r = client.get_rules();
+    assert_eq!(r.max_transfer_amount, 500);
+}
+
+#[test]
+fn test_activate_rules_without_pending_fails() {
+    let (_env, client, _admin) = setup();
+    let res = client.try_activate_rules();
+    assert_eq!(res, Err(Ok(Error::from(ComplianceError::NoRulesPending))));
+}
+
+#[test]
+fn test_set_rules_bypasses_delay() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+
+    let kyc_id = env.register(KycRegistry, ());
+    let kyc = KycRegistryClient::new(&env, &kyc_id);
+    kyc.initialize(&admin);
+
+    let contract_id = env.register(ComplianceEngine, ());
+    let client = ComplianceEngineClient::new(&env, &contract_id);
+    client.initialize(&admin, &kyc_id, &86_400u64);
+
+    // set_rules is immediate even with a 24-hour delay
+    client.set_rules(&rules(999, 0, 0, false));
+    let r = client.get_rules();
+    assert_eq!(r.max_transfer_amount, 999);
 }

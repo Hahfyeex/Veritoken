@@ -37,11 +37,11 @@ fn setup() -> Harness {
     let kyc = KycRegistryClient::new(&env, &kyc_id);
     kyc.initialize(&admin);
     let verifier = Address::generate(&env);
-    kyc.add_verifier(&verifier);
+    kyc.add_verifier(&admin, &verifier);
 
     let compliance_id = env.register(ComplianceEngine, ());
     let compliance = ComplianceEngineClient::new(&env, &compliance_id);
-    compliance.initialize(&admin, &kyc_id);
+    compliance.initialize(&admin, &kyc_id, &0u64);
 
     // Carbon credit token — constructor args passed atomically at register time
     let token_id = env.register(
@@ -377,7 +377,7 @@ fn test_valid_project_types_accepted_in_constructor() {
         kyc.initialize(&admin);
         let compliance_id = env.register(ComplianceEngine, ());
         let compliance = ComplianceEngineClient::new(&env, &compliance_id);
-        compliance.initialize(&admin, &kyc_id);
+        compliance.initialize(&admin, &kyc_id, &0u64);
         let mut m = meta(&env);
         m.project_type = String::from_str(&env, pt);
         let token_id = env.register(CarbonCreditToken, (admin.clone(), kyc_id, compliance_id, m));

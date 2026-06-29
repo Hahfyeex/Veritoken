@@ -6,6 +6,7 @@ import { useAddressValidation } from "../lib/useAddressValidation";
 import { useAmountValidation } from "../lib/validation";
 import { PageHeader, Card, Field, Icon } from "../components/ui";
 import WalletGuard from "../components/WalletGuard";
+import ConfirmDialog from "../components/ConfirmDialog";
 import { useToast } from "../lib/toast";
 import type { RetirementReceipt, ContractEvent } from "../types";
 
@@ -125,6 +126,13 @@ export default function CarbonPage() {
   const [events, setEvents] = useState<ContractEvent[]>([]);
   const [eventsLoading, setEventsLoading] = useState(false);
 
+  const [confirm, setConfirm] = useState<{
+    title: string;
+    description: string;
+    onConfirm: () => Promise<void>;
+  } | null>(null);
+  const [confirmLoading, setConfirmLoading] = useState(false);
+
   // Address validations
   const mintToValidation = useAddressValidation(mintTo);
   const transferToValidation = useAddressValidation(transferTo);
@@ -143,7 +151,19 @@ export default function CarbonPage() {
       .finally(() => setEventsLoading(false));
   }, []);
 
-  const handleMint = async (e: React.FormEvent) => {
+  const runConfirmed = async (action: () => Promise<void>) => {
+    setConfirmLoading(true);
+    try {
+      await action();
+    } catch (err) {
+      addToast(err instanceof Error ? err.message : String(err), "error");
+    } finally {
+      setConfirmLoading(false);
+      setConfirm(null);
+    }
+  };
+
+  const handleMint = (e: React.FormEvent) => {
     e.preventDefault();
     if (!connected || !address) return;
     if (mintTo && !mintToValidation.isValid) {
@@ -154,24 +174,20 @@ export default function CarbonPage() {
       addToast(mintAmountValidation.error || "Invalid amount", "error");
       return;
     }
-    setMintLoading(true);
-    try {
-      await contracts.carbonToken.mint(
-        mintTo || address,
-        BigInt(mintAmount),
-        signTx,
-      );
-      addToast("Credits issued successfully.", "success");
-      setMintAmount("");
-      setMintTo("");
-    } catch (err) {
-      addToast(err instanceof Error ? err.message : String(err), "error");
-    } finally {
-      setMintLoading(false);
-    }
+    const recipient = mintTo || address;
+    setConfirm({
+      title: "Issue Carbon Credits",
+      description: `You are about to mint ${mintAmount} tCO₂e to ${recipient.slice(0, 8)}…${recipient.slice(-4)}.`,
+      onConfirm: async () => {
+        await contracts.carbonToken.mint(recipient, BigInt(mintAmount), signTx);
+        addToast("Credits issued successfully.", "success");
+        setMintAmount("");
+        setMintTo("");
+      },
+    });
   };
 
-  const handleTransfer = async (e: React.FormEvent) => {
+  const handleTransfer = (e: React.FormEvent) => {
     e.preventDefault();
     if (!connected || !address) return;
     if (!transferToValidation.isValid) {
@@ -182,51 +198,45 @@ export default function CarbonPage() {
       addToast(transferAmountValidation.error || "Invalid amount", "error");
       return;
     }
-    setTransferLoading(true);
-    try {
-      await contracts.carbonToken.transfer(
-        address,
-        transferTo,
-        BigInt(transferAmount),
-        signTx,
-      );
-      addToast("Transfer sent successfully.", "success");
-      setTransferAmount("");
-      setTransferTo("");
-    } catch (err) {
-      addToast(err instanceof Error ? err.message : String(err), "error");
-    } finally {
-      setTransferLoading(false);
-    }
+    setConfirm({
+      title: "Transfer Carbon Credits",
+      description: `You are about to transfer ${transferAmount} tCO₂e to ${transferTo.slice(0, 8)}…${transferTo.slice(-4)}.`,
+      onConfirm: async () => {
+        await contracts.carbonToken.transfer(address, transferTo, BigInt(transferAmount), signTx);
+        addToast("Transfer sent successfully.", "success");
+        setTransferAmount("");
+        setTransferTo("");
+      },
+    });
   };
 
-  const handleRetire = async (e: React.FormEvent) => {
+  const handleRetire = (e: React.FormEvent) => {
     e.preventDefault();
     if (!connected || !address) return;
     if (!retireAmountValidation.isValid) {
       addToast(retireAmountValidation.error || "Invalid amount", "error");
       return;
     }
-    setRetireLoading(true);
-    setLastReceipt(null);
-    try {
-      const receipt = await contracts.carbonToken.retire(
-        address,
-        BigInt(retireAmount),
-        retireBeneficiary,
-        retireReason,
-        signTx,
-      );
-      setLastReceipt(receipt);
-      addToast("Credits retired successfully.", "success");
-      setRetireAmount("");
-      setRetireBeneficiary("");
-      setRetireReason("");
-    } catch (err) {
-      addToast(err instanceof Error ? err.message : String(err), "error");
-    } finally {
-      setRetireLoading(false);
-    }
+    setConfirm({
+      title: "Retire Carbon Credits",
+      description: `You are about to permanently retire ${retireAmount} tCO₂e${retireBeneficiary ? ` on behalf of ${retireBeneficiary}` : ""}.`,
+      onConfirm: async () => {
+        setRetireLoading(true);
+        setLastReceipt(null);
+        try {
+          const receipt = await contracts.carbonToken.retire(
+            address, BigInt(retireAmount), retireBeneficiary, retireReason, signTx,
+          );
+          setLastReceipt(receipt);
+          addToast("Credits retired successfully.", "success");
+          setRetireAmount("");
+          setRetireBeneficiary("");
+          setRetireReason("");
+        } finally {
+          setRetireLoading(false);
+        }
+      },
+    });
   };
 
   const loadReceipts = async (targetPage: number) => {
@@ -561,6 +571,16 @@ export default function CarbonPage() {
           )}
 
       <RecentTransactions events={events} loading={eventsLoading} />
+
+      {confirm && (
+        <ConfirmDialog
+          title={confirm.title}
+          description={confirm.description}
+          onConfirm={() => runConfirmed(confirm.onConfirm)}
+          onCancel={() => setConfirm(null)}
+          loading={confirmLoading}
+        />
+      )}
     </div>
   );
 }

@@ -4,6 +4,7 @@ import { CONTRACT_IDS, fetchContractEvents } from "../lib/stellar";
 import { useAmountValidation } from "../lib/validation";
 import { PageHeader, Card, Field, Icon } from "../components/ui";
 import WalletGuard from "../components/WalletGuard";
+import ConfirmDialog from "../components/ConfirmDialog";
 import { useToast } from "../lib/toast";
 import type { ContractEvent } from "../types";
 
@@ -22,6 +23,11 @@ export default function InvoicePage() {
   });
   const [events, setEvents] = useState<ContractEvent[]>([]);
   const [eventsLoading, setEventsLoading] = useState(false);
+  const [confirm, setConfirm] = useState<{
+    title: string;
+    description: string;
+    onConfirm: () => void;
+  } | null>(null);
 
   // Amount validations
   const faceValueValidation = useAmountValidation(form.face_value_usd);
@@ -40,37 +46,25 @@ export default function InvoicePage() {
     setForm((f) => ({ ...f, [e.target.name]: e.target.value }));
   };
 
-  const handleIssue = async (e: React.FormEvent) => {
+  const handleIssue = (e: React.FormEvent) => {
     e.preventDefault();
     if (!faceValueValidation.isValid) {
       addToast(faceValueValidation.error || "Invalid face value", "error");
       return;
     }
     if (form.discount_rate_bps && !discountRateValidation.isValid) {
-      addToast(
-        discountRateValidation.error || "Invalid discount rate",
-        "error",
-      );
+      addToast(discountRateValidation.error || "Invalid discount rate", "error");
       return;
     }
-    try {
-      addToast(`Invoice ${form.invoice_id} tokenized successfully.`, "success");
-      setForm({
-        invoice_id: "",
-        issuer: "",
-        debtor: "",
-        face_value_usd: "",
-        discount_rate_bps: "0",
-        due_date: "",
-        currency: "USD",
-        ipfs_doc_hash: "",
-      });
-    } catch (err) {
-      addToast(
-        err instanceof Error ? err.message : "Failed to tokenize invoice.",
-        "error",
-      );
-    }
+    setConfirm({
+      title: "Tokenize Invoice",
+      description: `You are about to tokenize invoice #${form.invoice_id} with face value ${form.face_value_usd} ${form.currency} from ${form.issuer.slice(0, 8) || "—"}… to debtor ${form.debtor.slice(0, 8) || "—"}….`,
+      onConfirm: () => {
+        addToast(`Invoice ${form.invoice_id} tokenized successfully.`, "success");
+        setForm({ invoice_id: "", issuer: "", debtor: "", face_value_usd: "", discount_rate_bps: "0", due_date: "", currency: "USD", ipfs_doc_hash: "" });
+        setConfirm(null);
+      },
+    });
   };
 
   const hasFaceValueError =
@@ -161,6 +155,15 @@ export default function InvoicePage() {
       </WalletGuard>
 
       <RecentTransactions events={events} loading={eventsLoading} />
+
+      {confirm && (
+        <ConfirmDialog
+          title={confirm.title}
+          description={confirm.description}
+          onConfirm={confirm.onConfirm}
+          onCancel={() => setConfirm(null)}
+        />
+      )}
     </div>
   );
 }

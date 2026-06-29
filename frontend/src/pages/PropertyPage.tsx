@@ -4,6 +4,7 @@ import { CONTRACT_IDS, fetchContractEvents } from "../lib/stellar";
 import { useAmountValidation } from "../lib/validation";
 import { PageHeader, Card, Field, Select, Icon } from "../components/ui";
 import WalletGuard from "../components/WalletGuard";
+import ConfirmDialog from "../components/ConfirmDialog";
 import { useToast } from "../lib/toast";
 import type { ContractEvent } from "../types";
 
@@ -45,7 +46,13 @@ export default function PropertyPage() {
     setForm((f) => ({ ...f, [e.target.name]: e.target.value }));
   };
 
-  const handleTokenize = async (e: React.FormEvent) => {
+  const [confirm, setConfirm] = useState<{
+    title: string;
+    description: string;
+    onConfirm: () => void;
+  } | null>(null);
+
+  const handleTokenize = (e: React.FormEvent) => {
     e.preventDefault();
     if (!valuationValidation.isValid) {
       addToast(valuationValidation.error || "Invalid valuation", "error");
@@ -55,28 +62,15 @@ export default function PropertyPage() {
       addToast(sharesValidation.error || "Invalid share count", "error");
       return;
     }
-    try {
-      addToast(
-        `Property "${form.legal_name}" tokenized successfully.`,
-        "success",
-      );
-      setForm({
-        property_id: "",
-        legal_name: "",
-        jurisdiction: "",
-        address: "",
-        total_valuation_usd: "",
-        total_shares: "1000000",
-        property_type: "residential",
-        ipfs_title_hash: "",
-        kyc_tier_required: "1",
-      });
-    } catch (err) {
-      addToast(
-        err instanceof Error ? err.message : "Failed to tokenize property.",
-        "error",
-      );
-    }
+    setConfirm({
+      title: "Tokenize Property",
+      description: `You are about to tokenize "${form.legal_name}" (${form.property_type}) valued at ${form.total_valuation_usd} USD into ${form.total_shares} shares.`,
+      onConfirm: () => {
+        addToast(`Property "${form.legal_name}" tokenized successfully.`, "success");
+        setForm({ property_id: "", legal_name: "", jurisdiction: "", address: "", total_valuation_usd: "", total_shares: "1000000", property_type: "residential", ipfs_title_hash: "", kyc_tier_required: "1" });
+        setConfirm(null);
+      },
+    });
   };
 
   const hasValuationError =
@@ -183,6 +177,15 @@ export default function PropertyPage() {
       </WalletGuard>
 
       <RecentTransactions events={events} loading={eventsLoading} />
+
+      {confirm && (
+        <ConfirmDialog
+          title={confirm.title}
+          description={confirm.description}
+          onConfirm={confirm.onConfirm}
+          onCancel={() => setConfirm(null)}
+        />
+      )}
     </div>
   );
 }

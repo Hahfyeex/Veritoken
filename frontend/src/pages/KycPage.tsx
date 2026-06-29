@@ -4,6 +4,7 @@ import { CONTRACT_IDS, fetchContractEvents } from "../lib/stellar";
 import { useAddressValidation } from "../lib/useAddressValidation";
 import { PageHeader, Card, Field, Select, Icon } from "../components/ui";
 import WalletGuard from "../components/WalletGuard";
+import ConfirmDialog from "../components/ConfirmDialog";
 import { useToast } from "../lib/toast";
 import type { ContractEvent } from "../types";
 
@@ -22,6 +23,12 @@ export default function KycPage() {
   });
   const [events, setEvents] = useState<ContractEvent[]>([]);
   const [eventsLoading, setEventsLoading] = useState(false);
+
+  const [confirm, setConfirm] = useState<{
+    title: string;
+    description: string;
+    onConfirm: () => void;
+  } | null>(null);
 
   // Validation for both address fields
   const lookupValidation = useAddressValidation(lookup);
@@ -56,15 +63,15 @@ export default function KycPage() {
       addToast("Please enter a valid Stellar address for the subject", "error");
       return;
     }
-    addToast(
-      `KYC approved for ${approveForm.subject} at tier ${approveForm.tier}`,
-      "success",
-    );
-    setApproveForm({
-      subject: "",
-      tier: "0",
-      jurisdiction: "",
-      expiry_days: "365",
+    const tierLabel = ["Basic", "Accredited Investor", "Institutional"][Number(approveForm.tier)] ?? approveForm.tier;
+    setConfirm({
+      title: "Approve KYC",
+      description: `You are about to approve KYC for ${approveForm.subject.slice(0, 8)}…${approveForm.subject.slice(-4)} at tier ${tierLabel} (${approveForm.jurisdiction}).`,
+      onConfirm: () => {
+        addToast(`KYC approved for ${approveForm.subject} at tier ${approveForm.tier}`, "success");
+        setApproveForm({ subject: "", tier: "0", jurisdiction: "", expiry_days: "365" });
+        setConfirm(null);
+      },
     });
   };
 
@@ -184,6 +191,15 @@ export default function KycPage() {
       </WalletGuard>
 
       <RecentTransactions events={events} loading={eventsLoading} />
+
+      {confirm && (
+        <ConfirmDialog
+          title={confirm.title}
+          description={confirm.description}
+          onConfirm={confirm.onConfirm}
+          onCancel={() => setConfirm(null)}
+        />
+      )}
     </div>
   );
 }

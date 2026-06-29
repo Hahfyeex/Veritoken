@@ -168,7 +168,7 @@ export class KycRegistryClient {
       this.server,
       this.contractId,
       "add_verifier",
-      [toAddress(verifier)],
+      [toAddress(adminAddress), toAddress(verifier)],
       adminAddress,
       seq,
       signTx
@@ -186,8 +186,44 @@ export class KycRegistryClient {
       this.server,
       this.contractId,
       "remove_verifier",
-      [toAddress(verifier)],
+      [toAddress(adminAddress), toAddress(verifier)],
       adminAddress,
+      seq,
+      signTx
+    );
+  }
+
+  /** Immediately add a new admin. Requires existing admin auth. */
+  async addAdmin(
+    callerAddress: string,
+    newAdmin: string,
+    signTx: SignTx
+  ): Promise<void> {
+    const seq = await fetchSequence(this.server, callerAddress);
+    return writeCall(
+      this.server,
+      this.contractId,
+      "add_admin",
+      [toAddress(callerAddress), toAddress(newAdmin)],
+      callerAddress,
+      seq,
+      signTx
+    );
+  }
+
+  /** Remove an admin from the list. Panics on-chain if it would leave the list empty. */
+  async removeAdmin(
+    callerAddress: string,
+    adminToRemove: string,
+    signTx: SignTx
+  ): Promise<void> {
+    const seq = await fetchSequence(this.server, callerAddress);
+    return writeCall(
+      this.server,
+      this.contractId,
+      "remove_admin",
+      [toAddress(callerAddress), toAddress(adminToRemove)],
+      callerAddress,
       seq,
       signTx
     );
