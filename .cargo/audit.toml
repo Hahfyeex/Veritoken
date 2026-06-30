@@ -1,0 +1,25 @@
+# cargo-audit configuration for Veritoken workspace
+# https://rustsec.org/
+
+[advisories]
+# Advisories to ignore. Use this for vulnerabilities that:
+# - Do not affect the no-std WASM target used by Soroban contracts
+# - Have no fix available yet and are being tracked upstream
+# - Are false positives for this project's use case
+#
+# Each ignore entry should include a comment explaining why it's safe to ignore.
+# Example:
+# ignore = [
+#     "RUSTSEC-2023-0001", # Does not affect no-std WASM builds
+# ]
+ignore = []
+
+[database]
+# Fetch the advisory database from the default location
+path = "~/.cargo/advisory-db"
+
+# Perform a fresh fetch of the advisory database on each audit
+fetch = true
+
+# Use the default RustSec advisory database
+url = "https://github.com/RustSec/advisory-db.git"
