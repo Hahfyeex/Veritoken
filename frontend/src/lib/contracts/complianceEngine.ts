@@ -15,6 +15,7 @@ import {
   fetchSequence,
   toAddress,
   toI128,
+  toU32,
   type SignTx,
 } from "./base";
 import { nativeToScVal, xdr } from "@stellar/stellar-sdk";
@@ -33,6 +34,7 @@ function encodeRules(rules: ComplianceRules): xdr.ScVal {
       max_holders: rules.max_holders,
       require_same_jurisdiction: rules.require_same_jurisdiction,
       paused: rules.paused,
+      allowlist_mode: rules.allowlist_mode,
     },
     {
       type: {
@@ -41,6 +43,7 @@ function encodeRules(rules: ComplianceRules): xdr.ScVal {
         max_holders: ["u32"],
         require_same_jurisdiction: ["bool"],
         paused: ["bool"],
+        allowlist_mode: ["bool"],
       },
     }
   );
@@ -86,6 +89,19 @@ export class ComplianceEngineClient {
   /** Returns the current count of registered holders. */
   async holderCount(): Promise<number> {
     return readCall<number>(this.server, this.contractId, "holder_count", []);
+  }
+
+  /** Returns the number of addresses currently on the blocklist. */
+  async blocklistCount(): Promise<number> {
+    return readCall<number>(this.server, this.contractId, "blocklist_count", []);
+  }
+
+  /** Returns a page of blocklisted addresses (`limit` capped at 50 on-chain). */
+  async getBlocklist(start: number, limit: number): Promise<string[]> {
+    return readCall<string[]>(this.server, this.contractId, "get_blocklist", [
+      toU32(start),
+      toU32(limit),
+    ]);
   }
 
   // ── Write methods ─────────────────────────────────────────────────────────
@@ -203,6 +219,51 @@ export class ComplianceEngineClient {
       "unregister_holder",
       [toAddress(addr)],
       callerAddress,
+      seq,
+      signTx
+    );
+  }
+
+  // ── Allowlist ─────────────────────────────────────────────────────────────
+
+  /** Returns true when `addr` is on the allowlist. */
+  async isAllowlisted(addr: string): Promise<boolean> {
+    return readCall<boolean>(this.server, this.contractId, "is_allowlisted", [
+      toAddress(addr),
+    ]);
+  }
+
+  /** Add `addr` to the allowlist. Admin-only on-chain. */
+  async addToAllowlist(
+    adminAddress: string,
+    addr: string,
+    signTx: SignTx
+  ): Promise<void> {
+    const seq = await fetchSequence(this.server, adminAddress);
+    return writeCall(
+      this.server,
+      this.contractId,
+      "add_to_allowlist",
+      [toAddress(addr)],
+      adminAddress,
+      seq,
+      signTx
+    );
+  }
+
+  /** Remove `addr` from the allowlist. Admin-only on-chain. */
+  async removeFromAllowlist(
+    adminAddress: string,
+    addr: string,
+    signTx: SignTx
+  ): Promise<void> {
+    const seq = await fetchSequence(this.server, adminAddress);
+    return writeCall(
+      this.server,
+      this.contractId,
+      "remove_from_allowlist",
+      [toAddress(addr)],
+      adminAddress,
       seq,
       signTx
     );

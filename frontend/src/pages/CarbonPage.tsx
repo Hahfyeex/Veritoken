@@ -126,12 +126,8 @@ export default function CarbonPage() {
   const [events, setEvents] = useState<ContractEvent[]>([]);
   const [eventsLoading, setEventsLoading] = useState(false);
 
-  const [confirm, setConfirm] = useState<{
-    title: string;
-    description: string;
-    onConfirm: () => Promise<void>;
-  } | null>(null);
-  const [confirmLoading, setConfirmLoading] = useState(false);
+  const [registryUrl, setRegistryUrl] = useState<string | null>(null);
+  const [registryProjectId, setRegistryProjectId] = useState<string | null>(null);
 
   // Address validations
   const mintToValidation = useAddressValidation(mintTo);
@@ -149,6 +145,10 @@ export default function CarbonPage() {
       .then(setEvents)
       .catch(() => {})
       .finally(() => setEventsLoading(false));
+    const placeholder = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
+    contracts.carbonToken.getRegistryLink(placeholder)
+      .then(([url, pid]) => { setRegistryUrl(url); setRegistryProjectId(pid); })
+      .catch(() => {});
   }, []);
 
   const runConfirmed = async (action: () => Promise<void>) => {
@@ -291,6 +291,15 @@ export default function CarbonPage() {
         title="Carbon Credit Token"
         description="Issue verified carbon credits (1 token = 1 tonne CO₂e) and retire them with permanent on-chain receipts."
       />
+
+      {registryUrl && (
+        <div style={{ marginBottom: "1rem", fontSize: "0.85rem" }}>
+          <span className="muted">Registry: </span>
+          <a href={registryUrl} target="_blank" rel="noopener noreferrer" style={{ color: "var(--accent-2)" }}>
+            {registryProjectId ? `${registryProjectId} ↗` : registryUrl}
+          </a>
+        </div>
+      )}
 
       <div style={styles.tabs}>
         <button
@@ -569,6 +578,8 @@ export default function CarbonPage() {
               </button>
             </div>
           )}
+        </Card>
+      )}
 
       <RecentTransactions events={events} loading={eventsLoading} />
 

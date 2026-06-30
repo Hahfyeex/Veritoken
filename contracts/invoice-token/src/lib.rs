@@ -33,6 +33,7 @@ pub enum InvoiceError {
     PastDueDate = 12,
     InvoiceNotFound = 13,
     InvoiceAlreadyExists = 14,
+    InvalidWebhook = 15,
 }
 
 #[contracttype]
@@ -41,12 +42,14 @@ pub enum DataKey {
     PendingAdmin,
     KycRegistry,
     ComplianceEngine,
-    InvoiceMeta,
-    Balance(Address),
-    Allowance(Address, Address),
-    TotalSupply,
-    Settled,
-    SettlementAmount,
+    InvoiceMeta(String),
+    Balance(Address, String),
+    Allowance(Address, Address, String),
+    TotalSupply(String),
+    Settled(String),
+    SettlementAmount(String),
+    InvoicesList,
+    HolderList,
 }
 
 #[contracttype]
@@ -69,6 +72,8 @@ pub struct InvoiceMeta {
     pub ipfs_doc_hash: String,
     pub transfer_fee_bps: u32,
     pub fee_recipient: Option<Address>,
+    /// Optional webhook URL for off-chain notification services. If non-empty, must start with "https://".
+    pub notification_webhook: String,
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -200,6 +205,7 @@ impl InvoiceToken {
     /// Replace stored invoice metadata. Admin-only; panics if already settled.
     pub fn update_meta(env: Env, invoice_id: String, new_meta: InvoiceMeta) {
         Self::require_admin(&env);
+        Self::validate_webhook(&env, &new_meta.notification_webhook);
         if env
             .storage()
             .persistent()
@@ -266,54 +272,72 @@ impl InvoiceToken {
             THRESHOLD,
             BUMP,
         );
+        let meta: InvoiceMeta = env
+            .storage()
+            .persistent()
+            .get(&DataKey::InvoiceMeta(invoice_id.clone()))
+            .expect("invoice must exist");
         env.events()
-            .publish((symbol_short!("issued"), to), (invoice_id, amount));
+            .publish((symbol_short!("issued"), to), (invoice_id, amount, meta.notification_webhook));
     }
 
     /// Mark invoice as fully settled; equivalent to partial_settle(face_value_usd).
-    pub fn settle(env: Env) {
+    pub fn settle(env: Env, invoice_id: String) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         Self::require_admin(&env);
-        let meta: InvoiceMeta = env.storage().instance().get(&DataKey::InvoiceMeta).unwrap();
-        env.storage().instance().set(&DataKey::Settled, &true);
+        let meta: InvoiceMeta = env
+            .storage()
+            .persistent()
+            .get(&DataKey::InvoiceMeta(invoice_id.clone()))
+            .expect("invoice must exist");
         env.storage()
-            .instance()
-            .set(&DataKey::SettlementAmount, &meta.face_value_usd);
-        env.events().publish((symbol_short!("settled"),), ());
+            .persistent()
+            .set(&DataKey::Settled(invoice_id.clone()), &true);
+        env.storage()
+            .persistent()
+            .set(&DataKey::SettlementAmount(invoice_id.clone()), &meta.face_value_usd);
+        env.events()
+            .publish((symbol_short!("settled"),), (invoice_id, meta.notification_webhook));
     }
 
     /// Mark invoice as partially settled with the given payment amount.
     /// Enables proportional redemption: each holder may redeem up to
     /// `balance * settlement_amount / total_supply` tokens.
-    pub fn partial_settle(env: Env, settlement_amount: i128) {
+    pub fn partial_settle(env: Env, invoice_id: String, settlement_amount: i128) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         Self::require_admin(&env);
         if settlement_amount <= 0 {
             panic!("settlement_amount must be positive");
         }
-        let meta: InvoiceMeta = env.storage().instance().get(&DataKey::InvoiceMeta).unwrap();
+        let meta: InvoiceMeta = env
+            .storage()
+            .persistent()
+            .get(&DataKey::InvoiceMeta(invoice_id.clone()))
+            .expect("invoice must exist");
         if settlement_amount > meta.face_value_usd {
             panic!("settlement_amount exceeds face value");
         }
-        env.storage().instance().set(&DataKey::Settled, &true);
         env.storage()
-            .instance()
-            .set(&DataKey::SettlementAmount, &settlement_amount);
+            .persistent()
+            .set(&DataKey::Settled(invoice_id.clone()), &true);
+        env.storage()
+            .persistent()
+            .set(&DataKey::SettlementAmount(invoice_id.clone()), &settlement_amount);
         env.events()
-            .publish((symbol_short!("p_settld"),), settlement_amount);
+            .publish((symbol_short!("p_settld"),), (invoice_id, settlement_amount));
     }
 
-    pub fn settlement_amount(env: Env) -> i128 {
+    pub fn settlement_amount(env: Env, invoice_id: String) -> i128 {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         env.storage()
-            .instance()
-            .get(&DataKey::SettlementAmount)
+            .persistent()
+            .get(&DataKey::SettlementAmount(invoice_id))
             .unwrap_or(0)
     }
 
     /// Burn tokens upon settlement / redemption.
     /// Redemption is limited to the holder's proportional share of the settled amount.
-    pub fn redeem(env: Env, from: Address, amount: i128) {
+    pub fn redeem(env: Env, invoice_id: String, from: Address, amount: i128) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         from.require_auth();
         if !env
@@ -331,14 +355,14 @@ impl InvoiceToken {
         }
         let settlement: i128 = env
             .storage()
-            .instance()
-            .get(&DataKey::SettlementAmount)
+            .persistent()
+            .get(&DataKey::SettlementAmount(invoice_id.clone()))
             .unwrap_or(0);
         if settlement > 0 {
-            let total_supply: i128 = env
+            let meta: InvoiceMeta = env
                 .storage()
-                .instance()
-                .get(&DataKey::TotalSupply)
+                .persistent()
+                .get(&DataKey::TotalSupply(invoice_id.clone()))
                 .unwrap_or(0);
             if total_supply > 0 {
                 let max_redeemable = bal * settlement / total_supply;
@@ -347,9 +371,10 @@ impl InvoiceToken {
                 }
             }
         }
-        env.storage()
-            .persistent()
-            .set(&DataKey::Balance(from.clone()), &(bal - amount));
+        env.storage().persistent().set(
+            &DataKey::Balance(from.clone(), invoice_id.clone()),
+            &(bal - amount),
+        );
         let supply: i128 = env
             .storage()
             .persistent()
@@ -645,9 +670,47 @@ impl InvoiceToken {
         String::from_str(&env, env!("CARGO_PKG_VERSION"))
     }
 
+    /// Returns the discounted present value of an invoice in stroops.
+    /// Formula: `face_value - (face_value * discount_rate_bps * days_to_maturity) / (365 * 10_000)`.
+    /// Clamped to 0 if the result is negative (heavily discounted or very long maturity).
+    pub fn present_value(env: Env, invoice_id: String) -> i128 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        let meta: InvoiceMeta = env
+            .storage()
+            .persistent()
+            .get(&DataKey::InvoiceMeta(invoice_id))
+            .expect("invoice not found");
+        let now = env.ledger().timestamp();
+        let days_to_maturity = (meta.due_date.saturating_sub(now) / 86400) as i128;
+        let pv = meta.face_value_usd
+            - (meta.face_value_usd * meta.discount_rate_bps as i128 * days_to_maturity)
+                / (365 * 10_000);
+        pv.max(0)
+    }
+
     // ── Internals ────────────────────────────────────────────────────────────
 
+    fn validate_webhook(env: &Env, webhook: &String) {
+        if webhook.len() == 0 {
+            return;
+        }
+        let len = webhook.len() as usize;
+        if len < 8 {
+            panic_with_error!(env, InvoiceError::InvalidWebhook);
+        }
+        // Copy string into a stack buffer (max 256 bytes for a webhook URL)
+        let mut buf = [0u8; 256];
+        if len > 256 {
+            panic_with_error!(env, InvoiceError::InvalidWebhook);
+        }
+        webhook.copy_into_slice(&mut buf[..len]);
+        if &buf[..8] != b"https://" {
+            panic_with_error!(env, InvoiceError::InvalidWebhook);
+        }
+    }
+
     fn do_create_invoice(env: &Env, meta: InvoiceMeta) {
+        Self::validate_webhook(env, &meta.notification_webhook);
         let invoice_id = meta.invoice_id.clone();
         if env
             .storage()
@@ -692,6 +755,19 @@ impl InvoiceToken {
             .get(&DataKey::Admin)
             .expect("admin must be set");
         admin.require_auth();
+    }
+
+    fn validate_currency(currency: &String) {
+        if currency.len() != 3 {
+            panic!("currency must be ISO 4217 (3 uppercase letters)");
+        }
+        let mut bytes = [0u8; 3];
+        currency.copy_into_slice(&mut bytes);
+        for b in bytes {
+            if b < b'A' || b > b'Z' {
+                panic!("currency must be ISO 4217 (3 uppercase letters)");
+            }
+        }
     }
 
     fn require_kyc(env: &Env, addr: &Address) {

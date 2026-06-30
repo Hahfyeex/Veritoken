@@ -25,6 +25,8 @@ fn meta(env: &Env) -> ProjectMeta {
         country: String::from_str(env, "BR"),
         verifier: String::from_str(env, "Verra"),
         ipfs_cert_hash: String::from_str(env, "Qm..."),
+        registry_url: String::from_str(env, "https://registry.verra.org"),
+        registry_project_id: String::from_str(env, "VCS-1234"),
     }
 }
 
@@ -465,4 +467,96 @@ fn test_vintage_year_zero_rejected() {
     let mut m = meta(&h.env);
     m.vintage_year = 0;
     assert!(h.token.try_update_meta(&m).is_err());
+}
+
+// ── get_receipts pagination tests (#202) ─────────────────────────────────────
+
+/// Helper: retire `amount` tokens from alice in the given harness.
+fn do_retire(h: &Harness, alice: &Address, amount: i128) {
+    h.token.retire(
+        alice,
+        &amount,
+        &String::from_str(&h.env, "beneficiary"),
+        &String::from_str(&h.env, "reason"),
+    );
+}
+
+#[test]
+fn test_get_receipts_pagination() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    // Mint enough to retire 5 times
+    h.token.mint(&alice, &500);
+
+    for amount in [10i128, 20, 30, 40, 50] {
+        do_retire(&h, &alice, amount);
+    }
+
+    assert_eq!(h.token.retirement_count(), 5);
+
+    // First page: start=0, limit=3 → indices 0,1,2
+    let page1 = h.token.get_receipts(&0, &3);
+    assert_eq!(page1.len(), 3);
+
+    // Second page: start=3, limit=3 → indices 3,4 (only 2 remain)
+    let page2 = h.token.get_receipts(&3, &3);
+    assert_eq!(page2.len(), 2);
+}
+
+#[test]
+fn test_get_receipts_limit_cap() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &200);
+
+    // Retire only twice
+    do_retire(&h, &alice, 50);
+    do_retire(&h, &alice, 75);
+
+    assert_eq!(h.token.retirement_count(), 2);
+
+    // Requesting 200 items (> MAX_PAGE_SIZE=100) should still only return 2
+    let results = h.token.get_receipts(&0, &200);
+    assert_eq!(results.len(), 2);
+}
+
+#[test]
+fn test_get_receipts_beyond_end_returns_empty() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &100);
+
+    do_retire(&h, &alice, 10);
+
+    assert_eq!(h.token.retirement_count(), 1);
+
+    // start=5 is past the single receipt at index 0 → empty
+    let results = h.token.get_receipts(&5, &10);
+    assert_eq!(results.len(), 0);
+}
+
+#[test]
+fn test_get_receipts_insertion_order() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &300);
+
+    let amounts = [10i128, 20, 30];
+    for &amount in &amounts {
+        do_retire(&h, &alice, amount);
+    }
+
+    assert_eq!(h.token.retirement_count(), 3);
+
+    let receipts = h.token.get_receipts(&0, &10);
+    assert_eq!(receipts.len(), 3);
+
+    // Receipts must appear in insertion (retirement) order
+    assert_eq!(receipts.get(0).unwrap().amount, 10);
+    assert_eq!(receipts.get(1).unwrap().amount, 20);
+    assert_eq!(receipts.get(2).unwrap().amount, 30);
 }

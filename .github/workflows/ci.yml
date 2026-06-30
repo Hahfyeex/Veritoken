@@ -103,6 +103,34 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-wasm-${{ matrix.crate }}-
       - name: Build WASM
         run: cargo build --release --target wasm32-unknown-unknown -p ${{ matrix.crate }}
+      - name: Check WASM sizes
+        env:
+          # Maximum allowed size per WASM binary, in bytes (128 KB).
+          # Adjust this if legitimate contract growth approaches the limit.
+          MAX_WASM_BYTES: 131072
+        run: |
+          set -euo pipefail
+          wasm_dir="target/wasm32-unknown-unknown/release"
+          shopt -s nullglob
+          wasm_files=("$wasm_dir"/*.wasm)
+          if [ ${#wasm_files[@]} -eq 0 ]; then
+            echo "No .wasm files found in $wasm_dir" >&2
+            exit 1
+          fi
+          oversized=0
+          for wasm in "${wasm_files[@]}"; do
+            size=$(wc -c < "$wasm")
+            if [ "$size" -gt "$MAX_WASM_BYTES" ]; then
+              echo "::error::$(basename "$wasm") is ${size} bytes (limit ${MAX_WASM_BYTES} bytes)"
+              oversized=1
+            else
+              echo "$(basename "$wasm"): ${size} bytes (limit ${MAX_WASM_BYTES} bytes)"
+            fi
+          done
+          if [ "$oversized" -ne 0 ]; then
+            echo "One or more WASM binaries exceed the ${MAX_WASM_BYTES}-byte limit." >&2
+            exit 1
+          fi
 
   frontend-test:
     name: Frontend Unit Tests
@@ -175,3 +203,30 @@ jobs:
       - name: Stop Stellar quickstart node
         if: always()
         run: docker compose down
+
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo-audit binary
+        uses: actions/cache@v4
+        id: cache-cargo-audit
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: ${{ runner.os }}-cargo-audit-0.21
+      - name: Install cargo-audit
+        if: steps.cache-cargo-audit.outputs.cache-hit != 'true'
+        run: cargo install cargo-audit --locked
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-audit-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-audit-registry-
+      - name: Run security audit
+        run: cargo audit

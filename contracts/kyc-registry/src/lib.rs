@@ -31,6 +31,17 @@ pub enum DataKey {
     VerifierCount,
     ExpiryIndex(u32),
     ExpiryIndexCount,
+    VerifierLog(u32),
+    VerifierLogCount,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct VerifierLogEntry {
+    pub verifier: Address,
+    pub subject: Address,
+    pub action: String,
+    pub timestamp: u64,
 }
 
 #[contracttype]
@@ -254,6 +265,7 @@ impl KycRegistry {
             jurisdiction,
         };
         Self::write_record(&env, subject.clone(), record);
+        Self::append_log(&env, &verifier, &subject, "approve");
         env.events()
             .publish((symbol_short!("approved"), subject), verifier);
     }
@@ -265,6 +277,7 @@ impl KycRegistry {
         let mut record = Self::get_record_or_default(&env, subject.clone(), &verifier);
         record.status = KycStatus::Rejected;
         Self::write_record(&env, subject.clone(), record);
+        Self::append_log(&env, &verifier, &subject, "reject");
         env.events()
             .publish((symbol_short!("rejected"), subject), verifier);
     }
@@ -276,6 +289,7 @@ impl KycRegistry {
         let mut record = Self::get_record_or_default(&env, subject.clone(), &verifier);
         record.status = KycStatus::Revoked;
         Self::write_record(&env, subject.clone(), record);
+        Self::append_log(&env, &verifier, &subject, "revoke");
         env.events()
             .publish((symbol_short!("revoked"), subject), verifier);
     }
@@ -386,6 +400,26 @@ impl KycRegistry {
             })
     }
 
+    fn append_log(env: &Env, verifier: &Address, subject: &Address, action: &str) {
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::VerifierLogCount)
+            .unwrap_or(0);
+        let entry = VerifierLogEntry {
+            verifier: verifier.clone(),
+            subject: subject.clone(),
+            action: String::from_str(env, action),
+            timestamp: env.ledger().timestamp(),
+        };
+        let key = DataKey::VerifierLog(count);
+        env.storage().persistent().set(&key, &entry);
+        env.storage().persistent().extend_ttl(&key, THRESHOLD, BUMP);
+        env.storage()
+            .instance()
+            .set(&DataKey::VerifierLogCount, &(count + 1));
+    }
+
     fn write_record(env: &Env, addr: Address, record: KycRecord) {
         if record.status == KycStatus::Approved && record.expiry != 0 {
             let idx: u32 = env.storage().instance().get(&DataKey::ExpiryIndexCount).unwrap_or(0);
@@ -398,6 +432,37 @@ impl KycRegistry {
         let key = DataKey::KycStatus(addr);
         env.storage().persistent().set(&key, &record);
         env.storage().persistent().extend_ttl(&key, THRESHOLD, BUMP);
+    }
+
+    /// Bulk-revoke all subjects approved by a specific verifier. Admin-only.
+    /// Capped at 50 subjects per call; call again if more subjects remain.
+    /// Emits a `revoked` event per subject and a `bulk_rvkd` event with the count.
+    pub fn revoke_all_by_verifier(env: Env, verifier: Address) {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        Self::require_admin(&env);
+        let key = DataKey::VerifierSubjects(verifier.clone());
+        let subjects: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| Vec::new(&env));
+        let cap: u32 = 50;
+        let count = subjects.len().min(cap);
+        let mut revoked: u32 = 0;
+        for i in 0..count {
+            let subject = subjects.get(i).unwrap();
+            let sk = DataKey::KycStatus(subject.clone());
+            if let Some(mut record) = env.storage().persistent().get::<DataKey, KycRecord>(&sk) {
+                if record.status == KycStatus::Approved {
+                    record.status = KycStatus::Revoked;
+                    env.storage().persistent().set(&sk, &record);
+                    env.storage().persistent().extend_ttl(&sk, THRESHOLD, BUMP);
+                    env.events().publish((symbol_short!("revoked"), subject), verifier.clone());
+                    revoked += 1;
+                }
+            }
+        }
+        env.events().publish((symbol_short!("bulk_rvkd"),), (verifier, revoked));
     }
 
     pub fn get_expiring_soon(env: Env, within_seconds: u64, start: u32, limit: u32) -> Vec<ExpiringRecord> {
@@ -418,6 +483,36 @@ impl KycRegistry {
                 }
             }
             i += 1;
+        }
+        out
+    }
+
+    // ── Verifier log ─────────────────────────────────────────────────────────
+
+    pub fn verifier_log_count(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::VerifierLogCount)
+            .unwrap_or(0)
+    }
+
+    pub fn get_verifier_log(env: Env, start: u32, limit: u32) -> Vec<VerifierLogEntry> {
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::VerifierLogCount)
+            .unwrap_or(0);
+        let capped = limit.min(50);
+        let end = (start + capped).min(count);
+        let mut out = Vec::new(&env);
+        for i in start..end {
+            if let Some(entry) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, VerifierLogEntry>(&DataKey::VerifierLog(i))
+            {
+                out.push_back(entry);
+            }
         }
         out
     }

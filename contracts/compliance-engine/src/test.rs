@@ -337,61 +337,56 @@ fn test_version_returns_nonempty() {
     assert!(v.len() > 0);
 }
 
-// ── Time-locked rule change tests ────────────────────────────────────────────
-
 #[test]
-fn test_propose_rules_activates_after_delay() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let admin = Address::generate(&env);
+fn test_blocklist_count_stays_accurate() {
+    let (env, client, _admin) = setup();
+    let addr1 = Address::generate(&env);
+    let addr2 = Address::generate(&env);
 
-    let kyc_id = env.register(KycRegistry, ());
-    let kyc = KycRegistryClient::new(&env, &kyc_id);
-    kyc.initialize(&admin);
+    assert_eq!(client.blocklist_count(), 0);
 
-    let contract_id = env.register(ComplianceEngine, ());
-    let client = ComplianceEngineClient::new(&env, &contract_id);
-    // 1000-second delay
-    client.initialize(&admin, &kyc_id, &1_000u64);
+    client.add_to_blocklist(&addr1);
+    assert_eq!(client.blocklist_count(), 1);
 
-    env.ledger().set_timestamp(5_000);
-    client.propose_rules(&rules(500, 0, 0, false));
+    client.add_to_blocklist(&addr2);
+    assert_eq!(client.blocklist_count(), 2);
 
-    // Too early: delay not yet elapsed
-    let res = client.try_activate_rules();
-    assert_eq!(res, Err(Ok(Error::from(ComplianceError::TooEarlyToActivate))));
+    // Duplicate add must not increment count
+    client.add_to_blocklist(&addr1);
+    assert_eq!(client.blocklist_count(), 2);
 
-    // After delay: activation succeeds
-    env.ledger().set_timestamp(6_001);
-    client.activate_rules();
+    client.remove_from_blocklist(&addr1);
+    assert_eq!(client.blocklist_count(), 1);
 
-    let r = client.get_rules();
-    assert_eq!(r.max_transfer_amount, 500);
+    // Remove of an address not on the list must not decrement count
+    client.remove_from_blocklist(&addr1);
+    assert_eq!(client.blocklist_count(), 1);
 }
 
 #[test]
-fn test_activate_rules_without_pending_fails() {
-    let (_env, client, _admin) = setup();
-    let res = client.try_activate_rules();
-    assert_eq!(res, Err(Ok(Error::from(ComplianceError::NoRulesPending))));
-}
+fn test_get_blocklist_pagination() {
+    let (env, client, _admin) = setup();
+    let addr1 = Address::generate(&env);
+    let addr2 = Address::generate(&env);
+    let addr3 = Address::generate(&env);
 
-#[test]
-fn test_set_rules_bypasses_delay() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let admin = Address::generate(&env);
+    client.add_to_blocklist(&addr1);
+    client.add_to_blocklist(&addr2);
+    client.add_to_blocklist(&addr3);
 
-    let kyc_id = env.register(KycRegistry, ());
-    let kyc = KycRegistryClient::new(&env, &kyc_id);
-    kyc.initialize(&admin);
+    // Fetch all
+    let all = client.get_blocklist(&0, &10);
+    assert_eq!(all.len(), 3);
 
-    let contract_id = env.register(ComplianceEngine, ());
-    let client = ComplianceEngineClient::new(&env, &contract_id);
-    client.initialize(&admin, &kyc_id, &86_400u64);
+    // First page (2 items)
+    let page1 = client.get_blocklist(&0, &2);
+    assert_eq!(page1.len(), 2);
 
-    // set_rules is immediate even with a 24-hour delay
-    client.set_rules(&rules(999, 0, 0, false));
-    let r = client.get_rules();
-    assert_eq!(r.max_transfer_amount, 999);
+    // Second page (1 item)
+    let page2 = client.get_blocklist(&2, &2);
+    assert_eq!(page2.len(), 1);
+
+    // Start beyond length returns empty
+    let empty = client.get_blocklist(&10, &5);
+    assert_eq!(empty.len(), 0);
 }

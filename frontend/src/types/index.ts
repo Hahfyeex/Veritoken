@@ -19,6 +19,8 @@ export interface InvoiceMeta {
   due_date: number;
   currency: string;
   ipfs_doc_hash: string;
+  /** Optional HTTPS webhook URL for off-chain notification services. */
+  notification_webhook: string;
 }
 
 export interface PropertyMeta {
@@ -65,6 +67,7 @@ export interface ComplianceRules {
   max_holders: number;
   require_same_jurisdiction: boolean;
   paused: boolean;
+  allowlist_mode: boolean;
 }
 
 export interface ContractEvent {

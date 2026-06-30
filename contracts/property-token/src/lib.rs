@@ -30,6 +30,15 @@ pub enum PropertyError {
 }
 
 #[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum DistributionType {
+    Rent = 0,
+    Capital = 1,
+    Other = 2,
+}
+
+#[contracttype]
 pub enum DataKey {
     Admin,
     PendingAdmin,
@@ -48,6 +57,12 @@ pub enum DataKey {
     HolderCount,
     DividendDeposit(u32),
     DividendDepositCount,
+    UnclaimedRent(Address),
+    UnclaimedCapital(Address),
+    DividendPerShareRent,
+    DividendPerShareCapital,
+    ClaimedDividendRent(Address),
+    ClaimedDividendCapital(Address),
 }
 
 #[contracttype]
@@ -56,6 +71,7 @@ pub struct DividendEvent {
     pub amount: i128,
     pub timestamp: u64,
     pub running_total_dps: i128,
+    pub distribution_type: u32,
 }
 
 #[contracttype]
@@ -251,6 +267,8 @@ impl PropertyToken {
         Self::reset_debt(&env, to.clone());
         Self::register_holder(&env, &to);
         Self::add_holder_local(&env, &to);
+        let minted: i128 = env.storage().instance().get(&DataKey::MintedShares).unwrap_or(0);
+        env.storage().instance().set(&DataKey::MintedShares, &(minted + shares));
         env.events().publish((symbol_short!("mint"), to), shares);
     }
 
@@ -317,6 +335,8 @@ impl PropertyToken {
         if balance == shares {
             Self::remove_holder_local(&env, &from);
         }
+        let minted: i128 = env.storage().instance().get(&DataKey::MintedShares).unwrap_or(0);
+        env.storage().instance().set(&DataKey::MintedShares, &(minted - shares));
         // Emit buyback event
         env.events().publish((symbol_short!("buyback"),), (from, shares));
     }
@@ -399,7 +419,8 @@ impl PropertyToken {
     // ── Dividends ────────────────────────────────────────────────────────────
 
     /// Deposit dividend amount (in stroops) to be distributed pro-rata.
-    pub fn deposit_dividend(env: Env, amount: i128) {
+    /// `distribution_type`: 0 = Rent, 1 = Capital, 2 = Other.
+    pub fn deposit_dividend(env: Env, amount: i128, distribution_type: u32) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         Self::require_admin(&env);
         let total: i128 = env
@@ -419,6 +440,28 @@ impl PropertyToken {
         env.storage()
             .instance()
             .set(&DataKey::DividendPerShare, &new_dps);
+
+        // Update typed DPS for rent/capital tracking
+        if distribution_type == DistributionType::Rent as u32 {
+            let dps_rent: i128 = env
+                .storage()
+                .instance()
+                .get(&DataKey::DividendPerShareRent)
+                .unwrap_or(0);
+            env.storage()
+                .instance()
+                .set(&DataKey::DividendPerShareRent, &(dps_rent + amount / total));
+        } else if distribution_type == DistributionType::Capital as u32 {
+            let dps_cap: i128 = env
+                .storage()
+                .instance()
+                .get(&DataKey::DividendPerShareCapital)
+                .unwrap_or(0);
+            env.storage()
+                .instance()
+                .set(&DataKey::DividendPerShareCapital, &(dps_cap + amount / total));
+        }
+
         let pool: i128 = env
             .storage()
             .instance()
@@ -437,6 +480,7 @@ impl PropertyToken {
             amount,
             timestamp: env.ledger().timestamp(),
             running_total_dps: new_dps,
+            distribution_type,
         };
         let deposit_key = DataKey::DividendDeposit(count);
         env.storage().persistent().set(&deposit_key, &event);
@@ -447,7 +491,7 @@ impl PropertyToken {
             .instance()
             .set(&DataKey::DividendDepositCount, &(count + 1));
 
-        env.events().publish((symbol_short!("div_dep"),), amount);
+        env.events().publish((symbol_short!("div_dep"),), (amount, distribution_type));
     }
 
     pub fn dividend_deposit_count(env: Env) -> u32 {
@@ -512,6 +556,54 @@ impl PropertyToken {
         unclaimed + Self::accrued(&env, holder)
     }
 
+    /// Claim only rent-yield dividends for `holder`.
+    pub fn claim_rent_yield(env: Env, holder: Address) -> i128 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        holder.require_auth();
+        Self::accrue_typed(&env, holder.clone());
+        let key = DataKey::UnclaimedRent(holder.clone());
+        let amount: i128 = env.storage().instance().get(&key).unwrap_or(0);
+        if amount <= 0 {
+            return 0;
+        }
+        env.storage().instance().set(&key, &0i128);
+        let pool: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::DividendPool)
+            .unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&DataKey::DividendPool, &(pool - amount));
+        env.events()
+            .publish((symbol_short!("rent_clm"), holder), amount);
+        amount
+    }
+
+    /// Claim only capital-return dividends for `holder`.
+    pub fn claim_capital_return(env: Env, holder: Address) -> i128 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        holder.require_auth();
+        Self::accrue_typed(&env, holder.clone());
+        let key = DataKey::UnclaimedCapital(holder.clone());
+        let amount: i128 = env.storage().instance().get(&key).unwrap_or(0);
+        if amount <= 0 {
+            return 0;
+        }
+        env.storage().instance().set(&key, &0i128);
+        let pool: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::DividendPool)
+            .unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&DataKey::DividendPool, &(pool - amount));
+        env.events()
+            .publish((symbol_short!("cap_clm"), holder), amount);
+        amount
+    }
+
     pub fn get_holders(env: Env, start: u32, limit: u32) -> Vec<Address> {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         let holders: Vec<Address> = env
@@ -531,10 +623,28 @@ impl PropertyToken {
 
     pub fn holder_count(env: Env) -> u32 {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        env.storage()
+        let engine: Address = env
+            .storage()
             .instance()
-            .get(&DataKey::HolderCount)
-            .unwrap_or(0)
+            .get(&DataKey::ComplianceEngine)
+            .expect("compliance engine must be set");
+        ComplianceEngineClient::new(&env, &engine).holder_count()
+    }
+
+    pub fn holder_slots_remaining(env: Env) -> u32 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        let engine: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::ComplianceEngine)
+            .expect("compliance engine must be set");
+        let client = ComplianceEngineClient::new(&env, &engine);
+        let rules = client.get_rules();
+        if rules.max_holders == 0 {
+            return u32::MAX;
+        }
+        let count = client.holder_count();
+        rules.max_holders.saturating_sub(count)
     }
 
     pub fn balance(env: Env, id: Address) -> i128 {
@@ -548,6 +658,88 @@ impl PropertyToken {
             .instance()
             .get(&DataKey::TotalShares)
             .unwrap_or(0)
+    }
+
+    /// Admin-initiated forced transfer for regulatory compliance (e.g. AML, court orders).
+    /// Does not require `from.require_auth()`. Requires active KYC for both parties,
+    /// tier for `to`, and checks pause/blocklist compliance for `to`. Snapshots dividends.
+    pub fn forced_transfer(env: Env, from: Address, to: Address, shares: i128) {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        Self::require_admin(&env);
+        if shares <= 0 {
+            panic_with_error!(env, PropertyError::NegativeShares);
+        }
+        Self::require_kyc(&env, &from);
+        Self::require_kyc(&env, &to);
+        Self::require_tier(&env, &to);
+        Self::check_forced_compliance(&env, &to);
+        let from_bal = Self::read_balance(&env, from.clone());
+        if from_bal < shares {
+            panic_with_error!(env, PropertyError::InsufficientShares);
+        }
+        Self::accrue(&env, from.clone());
+        Self::accrue(&env, to.clone());
+        Self::write_balance(&env, from.clone(), from_bal - shares);
+        let to_bal = Self::read_balance(&env, to.clone());
+        Self::write_balance(&env, to.clone(), to_bal + shares);
+        Self::reset_debt(&env, from.clone());
+        Self::reset_debt(&env, to.clone());
+        Self::register_holder(&env, &to);
+        Self::add_holder_local(&env, &to);
+        if from_bal == shares {
+            Self::remove_holder_local(&env, &from);
+        }
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ForcedTransferCount)
+            .unwrap_or(0);
+        let log_entry = ForcedTransferEntry {
+            from: from.clone(),
+            to: to.clone(),
+            shares,
+            timestamp: env.ledger().timestamp(),
+        };
+        let log_key = DataKey::ForcedTransferLog(count);
+        env.storage().persistent().set(&log_key, &log_entry);
+        env.storage()
+            .persistent()
+            .extend_ttl(&log_key, THRESHOLD, BUMP);
+        env.storage()
+            .instance()
+            .set(&DataKey::ForcedTransferCount, &(count + 1));
+        env.events()
+            .publish((symbol_short!("frc_xfer"), from, to), shares);
+    }
+
+    pub fn forced_transfer_count(env: Env) -> u32 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        env.storage()
+            .instance()
+            .get(&DataKey::ForcedTransferCount)
+            .unwrap_or(0)
+    }
+
+    pub fn get_forced_transfer_log(env: Env, start: u32, limit: u32) -> Vec<ForcedTransferEntry> {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ForcedTransferCount)
+            .unwrap_or(0);
+        let capped = limit.min(50);
+        let end = (start + capped).min(count);
+        let mut out = Vec::new(&env);
+        for i in start..end {
+            if let Some(entry) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, ForcedTransferEntry>(&DataKey::ForcedTransferLog(i))
+            {
+                out.push_back(entry);
+            }
+        }
+        out
     }
 
     pub fn version(env: Env) -> String {
@@ -580,6 +772,7 @@ impl PropertyToken {
             let unclaimed: i128 = env.storage().instance().get(&key).unwrap_or(0);
             env.storage().instance().set(&key, &(unclaimed + owed));
         }
+        Self::accrue_typed(env, holder.clone());
         Self::reset_debt(env, holder);
     }
 
@@ -589,6 +782,53 @@ impl PropertyToken {
         env.storage()
             .instance()
             .set(&DataKey::ClaimedDividend(holder), &debt);
+    }
+
+    /// Accrue typed (rent/capital) dividends for `holder` into their typed unclaimed buckets.
+    fn accrue_typed(env: &Env, holder: Address) {
+        let bal = Self::read_balance(env, holder.clone());
+
+        // Rent
+        let dps_rent: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::DividendPerShareRent)
+            .unwrap_or(0);
+        let claimed_rent: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ClaimedDividendRent(holder.clone()))
+            .unwrap_or(0);
+        let owed_rent = bal * dps_rent - claimed_rent;
+        if owed_rent > 0 {
+            let key = DataKey::UnclaimedRent(holder.clone());
+            let prev: i128 = env.storage().instance().get(&key).unwrap_or(0);
+            env.storage().instance().set(&key, &(prev + owed_rent));
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::ClaimedDividendRent(holder.clone()), &(bal * dps_rent));
+
+        // Capital
+        let dps_cap: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::DividendPerShareCapital)
+            .unwrap_or(0);
+        let claimed_cap: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ClaimedDividendCapital(holder.clone()))
+            .unwrap_or(0);
+        let owed_cap = bal * dps_cap - claimed_cap;
+        if owed_cap > 0 {
+            let key = DataKey::UnclaimedCapital(holder.clone());
+            let prev: i128 = env.storage().instance().get(&key).unwrap_or(0);
+            env.storage().instance().set(&key, &(prev + owed_cap));
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::ClaimedDividendCapital(holder), &(bal * dps_cap));
     }
 
     fn require_admin(env: &Env) {
@@ -623,6 +863,21 @@ impl PropertyToken {
         let actual = client.get_tier(addr);
         if actual < required {
             panic_with_error!(env, PropertyError::KycTierTooLow);
+        }
+    }
+
+    fn check_forced_compliance(env: &Env, to: &Address) {
+        let engine: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::ComplianceEngine)
+            .expect("compliance engine must be set");
+        let client = ComplianceEngineClient::new(env, &engine);
+        if client.get_rules().paused {
+            panic_with_error!(env, PropertyError::CompliancePaused);
+        }
+        if client.is_blocklisted(to) {
+            panic_with_error!(env, PropertyError::Blocklisted);
         }
     }
 
@@ -788,6 +1043,7 @@ mod compliance_iface {
         fn is_blocklisted(env: soroban_sdk::Env, addr: Address) -> bool;
         fn can_transfer(env: soroban_sdk::Env, from: Address, to: Address, amount: i128) -> bool;
         fn register_holder(env: soroban_sdk::Env, addr: Address);
+        fn holder_count(env: soroban_sdk::Env) -> u32;
     }
 }
 
@@ -802,6 +1058,7 @@ mod compliance_engine {
         pub max_holders: u32,
         pub require_same_jurisdiction: bool,
         pub paused: bool,
+        pub allowlist_mode: bool,
     }
 }
 

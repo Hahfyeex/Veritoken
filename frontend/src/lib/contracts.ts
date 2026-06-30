@@ -125,6 +125,11 @@ export class CarbonTokenClient {
     return scValToNative(val) as RetirementReceipt;
   }
 
+  async getRegistryLink(sourceAddress: string): Promise<[string, string]> {
+    const val = await simulateRead(this.id, "get_registry_link", [], sourceAddress);
+    return scValToNative(val) as [string, string];
+  }
+
   async getReceipts(
     start: number,
     limit: number,

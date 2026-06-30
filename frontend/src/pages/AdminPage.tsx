@@ -3,9 +3,11 @@ import { Contract, scValToNative, TransactionBuilder, Account, xdr } from "@stel
 import { useWallet } from "../lib/wallet";
 import { server, CONTRACT_IDS, NETWORK_PASSPHRASE, fetchContractEvents } from "../lib/stellar";
 import { PageHeader, Card, Field, Icon, Skeleton } from "../components/ui";
+import { AddressInput } from "../components/AddressInput";
 import WalletGuard from "../components/WalletGuard";
 import ConfirmDialog from "../components/ConfirmDialog";
 import { useToast } from "../lib/toast";
+import { contracts } from "../lib/contracts";
 import type { ComplianceRules, ContractEvent } from "../types";
 
 interface RulesFormState {
@@ -25,7 +27,7 @@ const DEFAULT_RULES: RulesFormState = {
 };
 
 export default function AdminPage() {
-  const { } = useWallet();
+  const { address, signTx } = useWallet();
   const { addToast } = useToast();
 
   const [rules, setRules] = useState<RulesFormState>(DEFAULT_RULES);
@@ -33,6 +35,14 @@ export default function AdminPage() {
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [events, setEvents] = useState<ContractEvent[]>([]);
   const [eventsLoading, setEventsLoading] = useState(false);
+
+  // Blocklist state
+  const [blocklist, setBlocklist] = useState<string[]>([]);
+  const [blocklistCount, setBlocklistCount] = useState(0);
+  const [blocklistLoading, setBlocklistLoading] = useState(false);
+  const [addAddress, setAddAddress] = useState("");
+  const [addLoading, setAddLoading] = useState(false);
+  const [removeLoading, setRemoveLoading] = useState<string | null>(null);
 
   useEffect(() => {
     if (!CONTRACT_IDS.complianceEngine) return;
@@ -81,7 +91,26 @@ export default function AdminPage() {
       }
     }
 
+    async function fetchBlocklist() {
+      if (!cancelled) setBlocklistLoading(true);
+      try {
+        const [list, count] = await Promise.all([
+          contracts.compliance.getBlocklist(0, 50),
+          contracts.compliance.blocklistCount(),
+        ]);
+        if (!cancelled) {
+          setBlocklist(list);
+          setBlocklistCount(count);
+        }
+      } catch {
+        // Non-fatal; blocklist section will remain empty
+      } finally {
+        if (!cancelled) setBlocklistLoading(false);
+      }
+    }
+
     fetchRules();
+    fetchBlocklist();
 
     setEventsLoading(true);
     fetchContractEvents(CONTRACT_IDS.complianceEngine, 10)
@@ -129,6 +158,49 @@ export default function AdminPage() {
         setConfirm(null);
       },
     });
+
+  const refreshBlocklist = async () => {
+    try {
+      const [list, count] = await Promise.all([
+        contracts.compliance.getBlocklist(0, 50),
+        contracts.compliance.blocklistCount(),
+      ]);
+      setBlocklist(list);
+      setBlocklistCount(count);
+    } catch {
+      // ignore refresh errors
+    }
+  };
+
+  const handleAddToBlocklist = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!addAddress || !address) return;
+    setAddLoading(true);
+    try {
+      await contracts.compliance.addToBlocklist(address, addAddress, signTx);
+      setAddAddress("");
+      addToast(`${addAddress.slice(0, 8)}… added to blocklist.`, "success");
+      await refreshBlocklist();
+    } catch (err) {
+      addToast(err instanceof Error ? err.message : "Failed to add address.", "error");
+    } finally {
+      setAddLoading(false);
+    }
+  };
+
+  const handleRemoveFromBlocklist = async (target: string) => {
+    if (!address) return;
+    setRemoveLoading(target);
+    try {
+      await contracts.compliance.removeFromBlocklist(address, target, signTx);
+      addToast(`${target.slice(0, 8)}… removed from blocklist.`, "success");
+      await refreshBlocklist();
+    } catch (err) {
+      addToast(err instanceof Error ? err.message : "Failed to remove address.", "error");
+    } finally {
+      setRemoveLoading(null);
+    }
+  };
 
   return (
     <div className="form-narrow">
@@ -206,6 +278,77 @@ export default function AdminPage() {
           </div>
         </Card>
       </WalletGuard>
+
+      <Card
+        title="Blocklist Management"
+        subtitle={`${blocklistCount} address${blocklistCount === 1 ? "" : "es"} blocked`}
+        style={{ marginTop: "1.25rem" }}
+      >
+        {blocklistLoading ? (
+          <div style={styles.spinnerWrap} aria-label="Loading blocklist">
+            <span style={styles.spinner} aria-hidden="true" />
+            <span className="muted" style={{ fontSize: "0.9rem" }}>Loading blocklist…</span>
+          </div>
+        ) : (
+          <>
+            {blocklist.length === 0 ? (
+              <p className="muted" style={{ fontSize: "0.875rem", marginBottom: "1.25rem" }}>
+                No addresses are currently blocked.
+              </p>
+            ) : (
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.82rem", marginBottom: "1.25rem" }}>
+                <thead>
+                  <tr style={{ borderBottom: "1px solid var(--border)", textAlign: "left" }}>
+                    <th style={th}>Address</th>
+                    <th style={{ ...th, width: 80, textAlign: "right" }}>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {blocklist.map((addr) => (
+                    <tr key={addr} style={{ borderBottom: "1px solid var(--border)" }}>
+                      <td style={{ ...td, fontFamily: "monospace" }}>
+                        {addr.slice(0, 8)}…{addr.slice(-8)}
+                      </td>
+                      <td style={{ ...td, textAlign: "right" }}>
+                        <WalletGuard>
+                          <button
+                            className="btn-danger"
+                            style={{ padding: "0.25rem 0.6rem", fontSize: "0.8rem" }}
+                            disabled={removeLoading === addr}
+                            onClick={() => handleRemoveFromBlocklist(addr)}
+                          >
+                            {removeLoading === addr ? "Removing…" : "Remove"}
+                          </button>
+                        </WalletGuard>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+
+            <WalletGuard>
+              <form onSubmit={handleAddToBlocklist} style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+                <AddressInput
+                  label="Add address to blocklist"
+                  value={addAddress}
+                  onChange={setAddAddress}
+                  placeholder="G… (Stellar address)"
+                  required
+                />
+                <button
+                  type="submit"
+                  className="btn-danger"
+                  disabled={addLoading || !addAddress}
+                  style={{ alignSelf: "flex-start" }}
+                >
+                  {addLoading ? "Adding…" : "Add to Blocklist"}
+                </button>
+              </form>
+            </WalletGuard>
+          </>
+        )}
+      </Card>
 
       <RecentTransactions events={events} loading={eventsLoading} />
 
