@@ -103,6 +103,34 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-wasm-${{ matrix.crate }}-
       - name: Build WASM
         run: cargo build --release --target wasm32-unknown-unknown -p ${{ matrix.crate }}
+      - name: Check WASM sizes
+        env:
+          # Maximum allowed size per WASM binary, in bytes (128 KB).
+          # Adjust this if legitimate contract growth approaches the limit.
+          MAX_WASM_BYTES: 131072
+        run: |
+          set -euo pipefail
+          wasm_dir="target/wasm32-unknown-unknown/release"
+          shopt -s nullglob
+          wasm_files=("$wasm_dir"/*.wasm)
+          if [ ${#wasm_files[@]} -eq 0 ]; then
+            echo "No .wasm files found in $wasm_dir" >&2
+            exit 1
+          fi
+          oversized=0
+          for wasm in "${wasm_files[@]}"; do
+            size=$(wc -c < "$wasm")
+            if [ "$size" -gt "$MAX_WASM_BYTES" ]; then
+              echo "::error::$(basename "$wasm") is ${size} bytes (limit ${MAX_WASM_BYTES} bytes)"
+              oversized=1
+            else
+              echo "$(basename "$wasm"): ${size} bytes (limit ${MAX_WASM_BYTES} bytes)"
+            fi
+          done
+          if [ "$oversized" -ne 0 ]; then
+            echo "One or more WASM binaries exceed the ${MAX_WASM_BYTES}-byte limit." >&2
+            exit 1
+          fi
 
   integration:
     name: Integration Tests
