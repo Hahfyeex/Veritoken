@@ -3,7 +3,7 @@
 
 use soroban_sdk::{
     contract, contractimpl, contracttype, contracterror, panic_with_error, symbol_short, Address,
-    Env, String, Symbol,
+    Env, String, Symbol, Vec,
 };
 
 mod admin;
@@ -19,20 +19,6 @@ mod test;
 
 #[cfg(test)]
 mod sep41_compliance;
-
-pub const META_LEGAL_ENTITY: &str = "legal_entity";
-pub const META_GOVERNING_LAW: &str = "governing_law";
-pub const META_ISIN: &str = "isin";
-pub const META_PROSPECTUS_HASH: &str = "prosp_hash";
-
-#[contracttype]
-#[derive(Clone)]
-pub struct ComplianceMetadata {
-    pub legal_entity: Option<String>,
-    pub governing_law: Option<String>,
-    pub isin: Option<String>,
-    pub prospectus_hash: Option<String>,
-}
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -59,6 +45,13 @@ pub struct ComplianceMetadata {
     pub governing_law: Option<String>,
     pub isin: Option<String>,
     pub prospectus_hash: Option<String>,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct RecipientEntry {
+    pub to: Address,
+    pub amount: i128,
 }
 
 #[contract]
@@ -375,6 +368,54 @@ impl RwaToken {
             governing_law: read(META_GOVERNING_LAW),
             isin: read(META_ISIN),
             prospectus_hash: read(META_PROSPECTUS_HASH),
+        }
+    }
+
+    /// Batch transfer tokens from `from` to up to 10 recipients in a single transaction.
+    /// All KYC and compliance checks run per-recipient before any balance changes occur.
+    /// Panics if the recipient count exceeds 10 or any compliance/KYC check fails.
+    pub fn batch_transfer(env: Env, from: Address, recipients: Vec<RecipientEntry>) {
+        if recipients.len() > 10 {
+            panic!("batch_transfer: exceeds maximum of 10 recipients");
+        }
+        from.require_auth();
+        if compliance::is_frozen(&env, &from) {
+            panic_with_error!(env, RwaError::AccountFrozen);
+        }
+        kyc::require_kyc(&env, &from);
+
+        let len = recipients.len();
+        // Validate all recipients before executing any balance changes.
+        for i in 0..len {
+            let entry = recipients.get(i).expect("recipient index out of bounds");
+            if entry.amount <= 0 {
+                panic!("amount must be positive");
+            }
+            if compliance::is_frozen(&env, &entry.to) {
+                panic_with_error!(env, RwaError::AccountFrozen);
+            }
+            kyc::require_kyc(&env, &entry.to);
+            compliance::check_transfer(&env, &from, &entry.to, entry.amount);
+        }
+
+        // Execute all balance changes.
+        for i in 0..len {
+            let entry = recipients.get(i).expect("recipient index out of bounds");
+            let to_balance_before = balance::read_balance(&env, entry.to.clone());
+            balance::spend_balance(&env, from.clone(), entry.amount);
+            balance::receive_balance(&env, entry.to.clone(), entry.amount);
+            if from != entry.to && to_balance_before == 0 {
+                compliance::register_holder(&env, &entry.to);
+            }
+            env.events().publish(
+                (symbol_short!("transfer"), from.clone(), entry.to.clone()),
+                entry.amount,
+            );
+        }
+
+        // Unregister from if balance dropped to zero.
+        if balance::read_balance(&env, from.clone()) == 0 {
+            compliance::unregister_holder(&env, &from);
         }
     }
 

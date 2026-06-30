@@ -64,6 +64,7 @@ pub struct RetirementReceipt {
     pub timestamp: u64,
     pub beneficiary: String,
     pub retirement_reason: String,
+    pub beneficiary_address: Option<Address>,
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -286,6 +287,7 @@ impl CarbonCreditToken {
             timestamp: env.ledger().timestamp(),
             beneficiary,
             retirement_reason: reason,
+            beneficiary_address: None,
         };
         let key = DataKey::Receipt(index);
         env.storage().persistent().set(&key, &receipt);
@@ -296,6 +298,68 @@ impl CarbonCreditToken {
 
         env.events()
             .publish((symbol_short!("retired"), retiree), amount);
+        receipt
+    }
+
+    /// Retire tokens on behalf of another party. Records both the retiring party
+    /// (`retiree`) and the actual beneficiary (`on_behalf_of`) on-chain.
+    /// Requires active KYC for both parties.
+    pub fn retire_on_behalf(
+        env: Env,
+        retiree: Address,
+        on_behalf_of: Address,
+        amount: i128,
+        reason: String,
+    ) -> RetirementReceipt {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        retiree.require_auth();
+        Self::require_kyc(&env, &retiree);
+        Self::require_kyc(&env, &on_behalf_of);
+        Self::check_compliance(&env, &retiree, &retiree, amount);
+        let bal = Self::read_balance(&env, retiree.clone());
+        if bal < amount {
+            panic_with_error!(env, CarbonError::InsufficientBalance);
+        }
+        Self::write_balance(&env, retiree.clone(), bal - amount);
+        let supply: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalSupply)
+            .unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalSupply, &(supply - amount));
+        let retired: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalRetired)
+            .unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalRetired, &(retired + amount));
+
+        let index: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RetirementCount)
+            .unwrap_or(0);
+        let receipt = RetirementReceipt {
+            retiree: retiree.clone(),
+            amount,
+            timestamp: env.ledger().timestamp(),
+            beneficiary: String::from_str(&env, ""),
+            retirement_reason: reason,
+            beneficiary_address: Some(on_behalf_of.clone()),
+        };
+        let key = DataKey::Receipt(index);
+        env.storage().persistent().set(&key, &receipt);
+        env.storage().persistent().extend_ttl(&key, THRESHOLD, BUMP);
+        env.storage()
+            .instance()
+            .set(&DataKey::RetirementCount, &(index + 1));
+
+        env.events()
+            .publish((symbol_short!("ret_obo"), retiree), on_behalf_of);
         receipt
     }
 

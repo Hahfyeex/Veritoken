@@ -656,6 +656,88 @@ impl PropertyToken {
             .unwrap_or(0)
     }
 
+    /// Admin-initiated forced transfer for regulatory compliance (e.g. AML, court orders).
+    /// Does not require `from.require_auth()`. Requires active KYC for both parties,
+    /// tier for `to`, and checks pause/blocklist compliance for `to`. Snapshots dividends.
+    pub fn forced_transfer(env: Env, from: Address, to: Address, shares: i128) {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        Self::require_admin(&env);
+        if shares <= 0 {
+            panic_with_error!(env, PropertyError::NegativeShares);
+        }
+        Self::require_kyc(&env, &from);
+        Self::require_kyc(&env, &to);
+        Self::require_tier(&env, &to);
+        Self::check_forced_compliance(&env, &to);
+        let from_bal = Self::read_balance(&env, from.clone());
+        if from_bal < shares {
+            panic_with_error!(env, PropertyError::InsufficientShares);
+        }
+        Self::accrue(&env, from.clone());
+        Self::accrue(&env, to.clone());
+        Self::write_balance(&env, from.clone(), from_bal - shares);
+        let to_bal = Self::read_balance(&env, to.clone());
+        Self::write_balance(&env, to.clone(), to_bal + shares);
+        Self::reset_debt(&env, from.clone());
+        Self::reset_debt(&env, to.clone());
+        Self::register_holder(&env, &to);
+        Self::add_holder_local(&env, &to);
+        if from_bal == shares {
+            Self::remove_holder_local(&env, &from);
+        }
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ForcedTransferCount)
+            .unwrap_or(0);
+        let log_entry = ForcedTransferEntry {
+            from: from.clone(),
+            to: to.clone(),
+            shares,
+            timestamp: env.ledger().timestamp(),
+        };
+        let log_key = DataKey::ForcedTransferLog(count);
+        env.storage().persistent().set(&log_key, &log_entry);
+        env.storage()
+            .persistent()
+            .extend_ttl(&log_key, THRESHOLD, BUMP);
+        env.storage()
+            .instance()
+            .set(&DataKey::ForcedTransferCount, &(count + 1));
+        env.events()
+            .publish((symbol_short!("frc_xfer"), from, to), shares);
+    }
+
+    pub fn forced_transfer_count(env: Env) -> u32 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        env.storage()
+            .instance()
+            .get(&DataKey::ForcedTransferCount)
+            .unwrap_or(0)
+    }
+
+    pub fn get_forced_transfer_log(env: Env, start: u32, limit: u32) -> Vec<ForcedTransferEntry> {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ForcedTransferCount)
+            .unwrap_or(0);
+        let capped = limit.min(50);
+        let end = (start + capped).min(count);
+        let mut out = Vec::new(&env);
+        for i in start..end {
+            if let Some(entry) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, ForcedTransferEntry>(&DataKey::ForcedTransferLog(i))
+            {
+                out.push_back(entry);
+            }
+        }
+        out
+    }
+
     pub fn version(env: Env) -> String {
         String::from_str(&env, env!("CARGO_PKG_VERSION"))
     }
@@ -777,6 +859,21 @@ impl PropertyToken {
         let actual = client.get_tier(addr);
         if actual < required {
             panic_with_error!(env, PropertyError::KycTierTooLow);
+        }
+    }
+
+    fn check_forced_compliance(env: &Env, to: &Address) {
+        let engine: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::ComplianceEngine)
+            .expect("compliance engine must be set");
+        let client = ComplianceEngineClient::new(env, &engine);
+        if client.get_rules().paused {
+            panic_with_error!(env, PropertyError::CompliancePaused);
+        }
+        if client.is_blocklisted(to) {
+            panic_with_error!(env, PropertyError::Blocklisted);
         }
     }
 
