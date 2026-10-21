@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import AdminPage from "../../pages/AdminPage";
 import { ToastProvider } from "../../lib/toast";
@@ -245,5 +245,44 @@ describe("AdminPage – blocklist management", () => {
         expect(errorMessage.textContent).toMatch(/valid/i);
       }
     });
+  });
+});
+
+describe("AdminPage – blocklist table at mobile width", () => {
+  const LONG_ADDRESS = "GBQG2SJ7MXUH34SI3MJ2I256I5UMGM2QSQZM77YFX5S6JOHXUQJEPC3A";
+  const originalWidth = window.innerWidth;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(contracts.compliance.getBlocklist).mockResolvedValue([LONG_ADDRESS]);
+    vi.mocked(contracts.compliance.blocklistCount).mockResolvedValue(1);
+    Object.defineProperty(window, "innerWidth", { configurable: true, writable: true, value: 360 });
+    window.dispatchEvent(new Event("resize"));
+  });
+
+  afterEach(() => {
+    vi.mocked(contracts.compliance.getBlocklist).mockResolvedValue([]);
+    vi.mocked(contracts.compliance.blocklistCount).mockResolvedValue(0);
+    Object.defineProperty(window, "innerWidth", { configurable: true, writable: true, value: originalWidth });
+  });
+
+  it("keeps the table inside its own horizontally scrollable region", async () => {
+    renderAdminPage();
+    const region = await screen.findByRole("region", { name: "Blocked addresses" });
+
+    expect(region.style.overflowX).toBe("auto");
+    expect(region.style.maxWidth).toBe("100%");
+    expect(region.getAttribute("tabindex")).toBe("0");
+    expect(within(region).getByRole("table")).toBeDefined();
+  });
+
+  it("keeps the long address readable and the Remove action reachable", async () => {
+    renderAdminPage();
+    const region = await screen.findByRole("region", { name: "Blocked addresses" });
+
+    expect(within(region).getByText(`${LONG_ADDRESS.slice(0, 8)}…${LONG_ADDRESS.slice(-8)}`)).toBeDefined();
+    expect(within(region).getByRole("button", { name: /Copy blocked address/i })).toBeDefined();
+    const remove = within(region).getByRole("button", { name: "Remove" }) as HTMLButtonElement;
+    expect(remove.disabled).toBe(false);
   });
 });

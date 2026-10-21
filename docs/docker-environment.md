@@ -112,6 +112,98 @@ For secret handling guidance, see [docs/secret-safe-deployment.md](secret-safe-d
 
 ---
 
+## Event Indexer Stack
+
+The event indexer runs from its own compose file, `docker-compose.indexer.yml`,
+separate from the main development stack. It starts three services:
+
+| Service | Purpose | Port | Health signal |
+|---|---|---|---|
+| `postgres` | PostgreSQL 16 database for indexed events | 5432 | `pg_isready -U veritoken -d veritoken_indexer` |
+| `stellar` | Stellar standalone node with Soroban RPC | 8000 | `curl -sf http://localhost:8000/soroban/rpc` |
+| `indexer` | Event indexer service and REST API | 3001 | `wget -qO- http://localhost:3001/health` |
+
+`indexer` only starts after both `postgres` and `stellar` report `healthy`.
+
+> The indexer stack and the main stack both bind host port 8000 for `stellar`.
+> Stop one before starting the other, or change the host port mapping.
+
+### Start the indexer
+
+```bash
+# Optional: contracts to index, as comma-separated label:contractId pairs.
+# Leave unset to start the service with no pollers.
+export CONTRACT_IDS="rwa:<RWA_TOKEN_ID>,kyc:<KYC_REGISTRY_ID>"
+
+docker compose -f docker-compose.indexer.yml up --build -d
+```
+
+No secrets are required for local use. The database credentials
+(`veritoken` / `veritoken`) are fixed local-only values defined in the compose file.
+
+### Environment variables
+
+All variables are set in `docker-compose.indexer.yml`; only `CONTRACT_IDS` is
+read from the host shell.
+
+| Variable | Compose value | Required | Notes |
+|---|---|---|---|
+| `DATABASE_URL` | `postgres://veritoken:veritoken@postgres:5432/veritoken_indexer` | Yes | Standard `PG*` variables are also honoured |
+| `RPC_URL` | `http://stellar:8000/soroban/rpc` | Yes | Falls back to `STELLAR_RPC_URL`; startup fails if both are blank |
+| `STELLAR_NETWORK` | `standalone` | No | Only used to pick a passphrase when `NETWORK_PASSPHRASE` is unset (`mainnet` or testnet) |
+| `NETWORK_PASSPHRASE` | `Standalone Network ; February 2017` | No | Overrides `STELLAR_NETWORK` |
+| `POLL_INTERVAL_MS` | `5000` | No | Must be a positive integer |
+| `PORT` | `3001` | No | Must be between 1 and 65535 |
+| `CONTRACT_IDS` | `${CONTRACT_IDS:-}` | No | `label:contractId` pairs; duplicate labels or IDs abort startup |
+
+### Startup sequence
+
+On start the indexer:
+
+1. Loads and validates configuration. Invalid values exit the process with
+   `[indexer] Fatal startup error: ...`, and compose restarts it (`restart: unless-stopped`).
+2. Runs database migrations from `migrations/`.
+3. Starts one poller per entry in `CONTRACT_IDS`. If none are configured it logs
+   `No contracts configured — set CONTRACT_IDS env var` and keeps running.
+4. Starts the REST API and logs `REST API listening on port 3001`.
+
+### Confirm it is healthy
+
+```bash
+# All three services should show "(healthy)".
+docker compose -f docker-compose.indexer.yml ps
+
+# Startup log for the indexer.
+docker compose -f docker-compose.indexer.yml logs indexer
+
+# Health endpoint.
+curl -s http://localhost:3001/health
+```
+
+A healthy indexer returns HTTP `200`:
+
+```json
+{ "status": "ok", "lag_seconds": 0, "cursors": {} }
+```
+
+- `cursors` maps each contract ID to its last processed paging token and stays
+  empty until events are indexed.
+- `lag_seconds` is a coarse estimate: `60` for a poller that has not processed a
+  ledger yet, `30` once it has, and `0` when no contracts are configured.
+- If the database cannot be reached, `/health` returns HTTP `503` with
+  `{ "status": "error", "error": "..." }`.
+
+The indexer is not covered by `scripts/docker-health.sh`; use the commands above.
+
+### Stop the indexer
+
+```bash
+docker compose -f docker-compose.indexer.yml down      # keep indexed data
+docker compose -f docker-compose.indexer.yml down -v   # also drop the postgres-data volume
+```
+
+---
+
 ## Stopping the Stack
 
 ```bash
