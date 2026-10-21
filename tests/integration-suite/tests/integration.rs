@@ -986,3 +986,36 @@ fn workflow_carbon_mixed_retire_beneficiary_index_consistency() {
     assert_eq!(ben2_rs.get(0).unwrap().amount, 20);
     assert_eq!(ben2_rs.get(1).unwrap().amount, 15);
 }
+
+// ── Issue #970: carbon retirement integration smoke case ─────────────────────
+/// Mint to a KYC-approved holder, retire credits, and verify the receipt via
+/// the public query path. This intentionally exercises the deployed contract
+/// client rather than the unit-test harness.
+#[test]
+fn workflow_carbon_mint_retire_verify_receipt() {
+    let s = build_stack();
+    let carbon = s.deploy_carbon();
+    let holder = Address::generate(&s.env);
+    s.onboard(&holder);
+
+    carbon.mint(&holder, &100);
+    assert_eq!(carbon.balance(&holder), 100);
+    assert_eq!(carbon.total_supply(), 100);
+
+    let receipt = carbon.retire(
+        &holder,
+        &25,
+        &String::from_str(&s.env, "integration beneficiary"),
+        &String::from_str(&s.env, "integration smoke retirement"),
+    );
+    assert_eq!(receipt.amount, 25);
+    assert_eq!(carbon.balance(&holder), 75);
+    assert_eq!(carbon.total_supply(), 75);
+    assert_eq!(carbon.total_retired(), 25);
+
+    let queried = carbon.get_receipt(&0);
+    assert_eq!(queried.retiree, holder);
+    assert_eq!(queried.amount, 25);
+    assert_eq!(carbon.retirement_count(), 1);
+    assert!(carbon.verify_receipt(&0).valid);
+}
