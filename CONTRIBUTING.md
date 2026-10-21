@@ -7,7 +7,8 @@ Thanks for your interest in contributing. Veritoken is a Soroban smart contract 
 ## Prerequisites
 
 - Rust (stable)
-- `wasm32-unknown-unknown` target: `rustup target add wasm32-unknown-unknown`
+- `wasm32v1-none` target: `rustup target add wasm32v1-none` (pinned in
+  `rust-toolchain.toml`, so `rustup` usually installs it automatically)
 - [Stellar CLI](https://developers.stellar.org/docs/tools/developer-tools/cli/stellar-cli)
 - Node.js ≥ 20 (for frontend work)
 
@@ -24,14 +25,21 @@ cd Veritoken
 
 ```bash
 # Check all contracts compile
-cargo check --target wasm32-unknown-unknown
+cargo check --target wasm32v1-none
 
 # Run tests
 cargo test --features testutils
 
-# Build WASM artifacts
-cargo build --release --target wasm32-unknown-unknown
+# Build WASM artifacts (output: target/wasm32v1-none/release/)
+cargo build --release --target wasm32v1-none
 ```
+
+> **Which wasm target?** Local builds and CI both use `wasm32v1-none`, the
+> target pinned in `rust-toolchain.toml`. Older guides that mention
+> `wasm32-unknown-unknown` are out of date — artifacts built with that target
+> land in a different directory and are not picked up by the size or
+> deployment scripts. See
+> [docs/troubleshooting.md](docs/troubleshooting.md#wasm-target-name-mismatch-wasm32v1-none-vs-wasm32-unknown-unknown).
 
 ### Frontend
 
@@ -53,11 +61,38 @@ All incoming issues and pull requests must conform to the new template files. Se
 3. Ensure the following pass before opening a PR:
    ```bash
    cargo fmt --check
-   cargo clippy --target wasm32-unknown-unknown
+   cargo clippy --target wasm32v1-none
    cargo test --features testutils
    ```
 4. For frontend changes: `npm run build` and `npm run lint` must pass
-5. Open a pull request against `main` with a clear description of what and why
+5. For shell script changes, syntax-check every changed script (see
+   [Shell script checks](#shell-script-checks))
+6. Open a pull request against `main` with a clear description of what and why
+
+---
+
+## Shell script checks
+
+Shell scripts under `scripts/` and `deployment/` drive deployment and admin
+workflows, so syntax errors should be caught before review rather than during
+a deploy. `bash -n` parses a script without executing it — it needs no
+secrets, network access, or Stellar identity.
+
+Check the scripts you changed:
+
+```bash
+git diff --name-only --diff-filter=d origin/main -- '*.sh' | xargs -r -n1 bash -n
+```
+
+Or check every tracked script (the same command CI runs in the
+`Deployment automation suite` workflow):
+
+```bash
+git ls-files -z '*.sh' | xargs -0 -r -n1 bash -n
+```
+
+No output means every script parsed successfully. `bash -n` catches syntax
+errors only; it does not run the script or validate its logic.
 
 ---
 
@@ -70,7 +105,7 @@ Before adding a new feature to an existing contract, check the current binary
 size:
 
 ```bash
-cargo build --release --target wasm32-unknown-unknown
+cargo build --release --target wasm32v1-none
 bash scripts/check-wasm-size.sh --print-sizes
 ```
 

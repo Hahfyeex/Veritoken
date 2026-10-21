@@ -69,7 +69,7 @@ verification report. See
 [docs/deployment-automation.md](docs/deployment-automation.md) for planning,
 resume, mainnet configuration, and verification details.
 
-**Prerequisites:** Rust, `wasm32-unknown-unknown` target, Stellar CLI, Node.js ≥ 20
+**Prerequisites:** Rust, `wasm32v1-none` target (`rustup target add wasm32v1-none`), Stellar CLI, Node.js ≥ 20
 
 ```bash
 # Clone
@@ -124,7 +124,7 @@ See [docs/docker-environment.md](docs/docker-environment.md) for full instructio
 ### Build contracts only
 
 ```bash
-cargo build --release --target wasm32-unknown-unknown
+cargo build --release --target wasm32v1-none
 ```
 
 ### Run tests
@@ -282,7 +282,7 @@ For detailed instructions, please see [CONTRIBUTING.md](CONTRIBUTING.md).
 3. Commit your changes
 4. Open a pull request against `main`
 
-Please ensure `cargo check --target wasm32-unknown-unknown` and `cargo test --features testutils` pass before submitting.
+Please ensure `cargo check --target wasm32v1-none` and `cargo test --features testutils` pass before submitting.
 
 ---
 

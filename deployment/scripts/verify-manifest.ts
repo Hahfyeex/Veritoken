@@ -169,9 +169,49 @@ async function contractExists(
   }
 }
 
+const PLACEHOLDER_PATTERNS: RegExp[] = [
+  /^(todo|tbd|fixme|changeme|change[-_ ]me|replace[-_ ]?me|placeholder|dummy|none|null|undefined|n\/a)$/i,
+  /^x{3,}$/i,
+  /^<.*>$/,
+  /^\$\{.*\}$/,
+  /^\{\{.*\}\}$/,
+  /^your[-_ ]/i,
+];
+
+/** Fields that must hold real deployment values, never placeholders. */
+const REQUIRED_VALUE_FIELDS = ["contract_id", "wasm_hash"] as const;
+
+/**
+ * Returns true when a value looks like an unfilled template placeholder
+ * (e.g. `todo`, `changeme`, `<CONTRACT_ID>`, `${WASM_HASH}`, `xxxx`).
+ */
+export function isPlaceholderValue(value: string): boolean {
+  const trimmed = value.trim();
+  return PLACEHOLDER_PATTERNS.some((pattern) => pattern.test(trimmed));
+}
+
+/**
+ * Rejects manifest entries whose required fields contain placeholder-looking
+ * values. Error messages name the entry and field but never echo the value,
+ * so secrets accidentally pasted into a manifest are not leaked to logs.
+ */
+export function assertNoPlaceholders(manifest: Manifest): void {
+  for (const [name, entry] of Object.entries(manifest.contracts)) {
+    for (const field of REQUIRED_VALUE_FIELDS) {
+      const value = entry?.[field];
+      if (typeof value === "string" && isPlaceholderValue(value)) {
+        throw new Error(
+          `Manifest entry "${name}" has a placeholder value in ${field} — replace it with the real deployed value.`
+        );
+      }
+    }
+  }
+}
+
 /**
  * Verify every contract in the manifest. Throws before any RPC call if a
- * contract ID is blank or whitespace-only. Returns true when all pass.
+ * contract ID is blank or whitespace-only, or if a required field holds a
+ * placeholder value. Returns true when all pass.
  */
 export async function verifyManifest(
   manifest: Manifest,
@@ -182,6 +222,9 @@ export async function verifyManifest(
       throw new Error(`Manifest entry "${name}" has an empty contract_id.`);
     }
   }
+  assertNoPlaceholders(manifest);
+
+  const entries = parseManifestEntries(manifest.contracts);
 
   let allPassed = true;
 

@@ -10,9 +10,11 @@
 #
 # Per-contract budgets (bytes)
 # ────────────────────────────
-# These figures are measured from the release build and include a 20 % headroom
-# above the current binary size to absorb minor feature additions without
-# triggering a false-positive failure.  If you need to raise a threshold:
+# No budget may exceed the 128 KB (131072-byte) deployment cap enforced in CI
+# by scripts/verify-artifacts.sh (MAX_BYTES) and the "Check WASM sizes against
+# CI threshold" step in .github/workflows/ci.yml (THRESHOLD_BYTES).  Per-contract
+# budgets may be tighter than that cap, never looser.  If you need to raise a
+# threshold:
 #   1. Confirm the growth is intentional (not dead code, unused deps, etc.).
 #   2. Update the value below and add a note in docs/contract-size-budget.md.
 #   3. Open a PR so the change is reviewed.
@@ -50,17 +52,17 @@ PRINT_ONLY="${PRINT_ONLY:-0}"
 # Per-contract byte budgets.
 # Keys are basename of the WASM file (without path, with .wasm extension).
 declare -A BUDGETS=(
-    ["kyc_registry.wasm"]=204800          # 200 KB
-    ["compliance_engine.wasm"]=204800      # 200 KB
-    ["rwa_token.wasm"]=262144             # 256 KB
-    ["invoice_token.wasm"]=262144         # 256 KB
-    ["property_token.wasm"]=262144        # 256 KB
-    ["carbon_credit_token.wasm"]=204800   # 200 KB
+    ["kyc_registry.wasm"]=131072          # 128 KB
+    ["compliance_engine.wasm"]=131072      # 128 KB
+    ["rwa_token.wasm"]=131072             # 128 KB
+    ["invoice_token.wasm"]=131072         # 128 KB
+    ["property_token.wasm"]=131072        # 128 KB
+    ["carbon_credit_token.wasm"]=131072   # 128 KB
     ["token_helpers.wasm"]=65536          # 64 KB  (library, not a standalone contract)
 )
 
-# Global fallback for any WASM not listed above.
-DEFAULT_BUDGET=262144   # 256 KB
+# Global fallback for any WASM not listed above (matches the CI cap).
+DEFAULT_BUDGET=131072   # 128 KB
 
 # ── Report ────────────────────────────────────────────────────────────────────
 
