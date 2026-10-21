@@ -1821,3 +1821,139 @@ fn test_append_retirement_receipt_rejects_unapproved_beneficiary_address() {
     assert_eq!(h.token.retirement_count(), before_count + 2);
     assert_eq!(receipt2.beneficiary_address, Some(approved_addr));
 }
+
+// ── Issues #965–#967: retirement and metadata regression coverage ────────────
+
+#[test]
+fn test_metadata_update_preserves_supply_and_receipts() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &100);
+    h.token.retire(
+        &alice,
+        &25,
+        &String::from_str(&h.env, "forest restoration"),
+        &String::from_str(&h.env, "metadata regression"),
+    );
+
+    let supply_before = h.token.total_supply();
+    let retired_before = h.token.total_retired();
+    let receipts_before = h.token.retirement_count();
+    let mut replacement = h.token.get_meta();
+    replacement.project_name = String::from_str(&h.env, "Amazon Reforestation Phase II");
+    replacement.registry_project_id = String::from_str(&h.env, "VCS-5678");
+    h.token.update_meta(&replacement);
+
+    assert_eq!(h.token.get_meta().project_name, replacement.project_name);
+    assert_eq!(h.token.get_meta().registry_project_id, replacement.registry_project_id);
+    assert_eq!(h.token.total_supply(), supply_before);
+    assert_eq!(h.token.total_retired(), retired_before);
+    assert_eq!(h.token.retirement_count(), receipts_before);
+    assert_eq!(h.token.get_receipt(&0).amount, 25);
+}
+
+#[test]
+fn test_invalid_metadata_update_preserves_previous_metadata() {
+    let h = setup();
+    let before = h.token.get_meta();
+    let mut invalid = before.clone();
+    invalid.project_type = String::from_str(&h.env, "coal");
+
+    assert!(h.token.try_update_meta(&invalid).is_err());
+    let after = h.token.get_meta();
+    assert_eq!(after.project_id, before.project_id);
+    assert_eq!(after.project_type, before.project_type);
+    assert_eq!(after.registry_project_id, before.registry_project_id);
+    assert_eq!(h.token.total_supply(), 0);
+    assert_eq!(h.token.retirement_count(), 0);
+}
+
+#[test]
+fn test_retire_on_behalf_requires_authorized_kyc_holder() {
+    let h = setup();
+    let retiree = Address::generate(&h.env);
+    let beneficiary = Address::generate(&h.env);
+    h.approve_kyc(&retiree);
+    h.approve_kyc(&beneficiary);
+    h.token.mint(&retiree, &50);
+
+    // No auths are mocked in this isolated deployment, so the caller cannot
+    // bypass the retiree.require_auth() guard.
+    let env2 = Env::default();
+    let admin2 = Address::generate(&env2);
+    let token_id2 = env2.register(
+        CarbonCreditToken,
+        (
+            admin2,
+            Address::generate(&env2),
+            Address::generate(&env2),
+            meta(&env2),
+        ),
+    );
+    let token2 = CarbonCreditTokenClient::new(&env2, &token_id2);
+    let unauthorized = Address::generate(&env2);
+    let beneficiary2 = Address::generate(&env2);
+    assert!(token2
+        .try_retire_on_behalf(
+            &unauthorized,
+            &beneficiary2,
+            &10,
+            &String::from_str(&env2, "unauthorized"),
+        )
+        .is_err());
+
+    let receipt = h.token.retire_on_behalf(
+        &retiree,
+        &beneficiary,
+        &10,
+        &String::from_str(&h.env, "authorized offset"),
+    );
+    assert_eq!(receipt.retiree, retiree);
+    assert_eq!(receipt.amount, 10);
+    assert_eq!(receipt.beneficiary_address, Some(beneficiary));
+    assert_eq!(h.token.balance(&retiree), 40);
+}
+
+#[test]
+fn test_batch_retire_preserves_input_order() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &60);
+    let requests = soroban_sdk::vec![
+        &h.env,
+        (10, String::from_str(&h.env, "first"), String::from_str(&h.env, "a")),
+        (20, String::from_str(&h.env, "second"), String::from_str(&h.env, "b")),
+        (30, String::from_str(&h.env, "third"), String::from_str(&h.env, "c")),
+    ];
+
+    let receipts = h.token.batch_retire(&alice, &requests);
+    assert_eq!(receipts.len(), 3);
+    assert_eq!(receipts.get(0).unwrap().amount, 10);
+    assert_eq!(receipts.get(1).unwrap().amount, 20);
+    assert_eq!(receipts.get(2).unwrap().amount, 30);
+    assert_eq!(receipts.get(0).unwrap().beneficiary, String::from_str(&h.env, "first"));
+    assert_eq!(h.token.balance(&alice), 0);
+    assert_eq!(h.token.total_retired(), 60);
+    assert_eq!(h.token.retirement_count(), 3);
+}
+
+#[test]
+fn test_batch_retire_late_invalid_entry_is_atomic() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &100);
+    let requests = soroban_sdk::vec![
+        &h.env,
+        (25, String::from_str(&h.env, "valid"), String::from_str(&h.env, "first")),
+        (0, String::from_str(&h.env, "invalid"), String::from_str(&h.env, "late")),
+    ];
+
+    assert!(h.token.try_batch_retire(&alice, &requests).is_err());
+    assert_eq!(h.token.balance(&alice), 100);
+    assert_eq!(h.token.total_supply(), 100);
+    assert_eq!(h.token.total_retired(), 0);
+    assert_eq!(h.token.retirement_count(), 0);
+}
