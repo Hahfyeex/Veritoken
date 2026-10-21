@@ -5,9 +5,9 @@ import { useToast } from "../lib/toast";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type TransitionKind = "Approve" | "Reject" | "Revoke" | "TierUpdate";
+export type TransitionKind = "Approve" | "Reject" | "Revoke" | "TierUpdate";
 
-interface KycTransition {
+export interface KycTransition {
   seq: number;
   kind: TransitionKind;
   verifier: string;
@@ -34,29 +34,58 @@ function formatTs(ts: number): string {
   return new Date(ts * 1000).toLocaleString();
 }
 
-// Mock data — replace with contract.kyc.getLifecycleHistory(address) when wired
-function mockHistory(address: string): KycTransition[] {
-  if (!address) return [];
-  const base = address.charCodeAt(5) % 3;
-  const now = Math.floor(Date.now() / 1000);
-  const entries: KycTransition[] = [
-    { seq: 0, kind: "Approve",    verifier: "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN", timestamp: now - 86400 * 60, tier: 0, expiry: now + 86400 * 305, jurisdiction: "US" },
-    { seq: 1, kind: "TierUpdate", verifier: "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN", timestamp: now - 86400 * 30, tier: 1, expiry: now + 86400 * 335, jurisdiction: "US" },
-  ];
-  if (base === 0) entries.push({ seq: 2, kind: "Revoke", verifier: "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN", timestamp: now - 86400 * 5, tier: 1, expiry: 0, jurisdiction: "US" });
-  if (base === 1) entries.push({ seq: 2, kind: "Approve", verifier: "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN", timestamp: now - 86400 * 2, tier: 2, expiry: now + 86400 * 363, jurisdiction: "EU" });
-  return entries;
+/** Thrown when no lifecycle-history client is available to the page. */
+export class KycHistoryUnavailableError extends Error {
+  constructor() {
+    super("KYC lifecycle history is not available from the connected client yet.");
+    this.name = "KycHistoryUnavailableError";
+  }
 }
+
+export type KycHistoryFetcher = (address: string) => Promise<KycTransition[]>;
+
+// The KYC registry contract exposes `get_lifecycle_history`, but the SDK has no
+// client method for it yet. Until one exists, report the gap explicitly instead
+// of rendering placeholder data as if it were on-chain history.
+const unavailableHistoryFetcher: KycHistoryFetcher = async () => {
+  throw new KycHistoryUnavailableError();
+};
+
+type FetchState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "error"; message: string; unavailable: boolean }
+  | { status: "loaded"; history: KycTransition[] };
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export default function KycTimelinePage() {
+export interface KycTimelinePageProps {
+  fetchHistory?: KycHistoryFetcher;
+}
+
+export default function KycTimelinePage({ fetchHistory = unavailableHistoryFetcher }: KycTimelinePageProps = {}) {
   const { addToast } = useToast();
   const [address, setAddress] = useState("");
-  const [history, setHistory] = useState<KycTransition[] | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [state, setState] = useState<FetchState>({ status: "idle" });
 
   const validation = useAddressValidation(address);
+  const loading = state.status === "loading";
+  const history = state.status === "loaded" ? state.history : null;
+
+  const loadHistory = async () => {
+    setState({ status: "loading" });
+    try {
+      const entries = await fetchHistory(address);
+      setState({ status: "loaded", history: entries });
+    } catch (err) {
+      const unavailable = err instanceof KycHistoryUnavailableError;
+      const message = unavailable
+        ? (err as Error).message
+        : "Failed to fetch KYC history. Check your connection and try again.";
+      setState({ status: "error", message, unavailable });
+      if (!unavailable) addToast("Failed to fetch KYC history", "error");
+    }
+  };
 
   const handleLookup = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -64,16 +93,7 @@ export default function KycTimelinePage() {
       addToast("Please enter a valid Stellar address", "error");
       return;
     }
-    setLoading(true);
-    try {
-      // TODO: replace with contracts.kyc.getLifecycleHistory(address, 0, 50)
-      await new Promise((r) => setTimeout(r, 400));
-      setHistory(mockHistory(address));
-    } catch {
-      addToast("Failed to fetch KYC history", "error");
-    } finally {
-      setLoading(false);
-    }
+    await loadHistory();
   };
 
   const latest = history?.[history.length - 1];
@@ -93,7 +113,7 @@ export default function KycTimelinePage() {
             <Field
               label="Investor address"
               value={address}
-              onChange={(e) => { setAddress(e.target.value); setHistory(null); }}
+              onChange={(e) => { setAddress(e.target.value); setState({ status: "idle" }); }}
               placeholder="G… (Stellar address)"
               required
               error={validation.error && address.length > 0 ? validation.error : null}
@@ -108,6 +128,25 @@ export default function KycTimelinePage() {
           </button>
         </form>
       </Card>
+
+      {state.status === "loading" && (
+        <Card title="Transition History" style={{ marginTop: "1.25rem" }}>
+          <p role="status" aria-live="polite" className="muted" style={{ fontSize: "0.875rem", margin: 0 }}>
+            Loading KYC history…
+          </p>
+        </Card>
+      )}
+
+      {state.status === "error" && (
+        <Card title="Transition History" style={{ marginTop: "1.25rem" }}>
+          <div role="alert" style={{ padding: "0.85rem 1rem", borderRadius: 10, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.3)", color: "#f87171", fontSize: "0.845rem" }}>
+            {state.message}
+          </div>
+          <button type="button" onClick={loadHistory} style={{ marginTop: "0.75rem" }}>
+            Retry
+          </button>
+        </Card>
+      )}
 
       {history !== null && (
         <>
