@@ -5,9 +5,7 @@ on:
   pull_request:
     paths:
       - "deployment/**"
-      - "scripts/deploy.sh"
-      - "scripts/verify-deployment.sh"
-      - "scripts/check-drift.sh"
+      - "**/*.sh"
       - "scripts/deployment/**"
       - "scripts/deployment_cli.py"
       - "docs/deployment-automation.md"
@@ -15,9 +13,7 @@ on:
   push:
     paths:
       - "deployment/**"
-      - "scripts/deploy.sh"
-      - "scripts/verify-deployment.sh"
-      - "scripts/check-drift.sh"
+      - "**/*.sh"
       - "scripts/deployment/**"
       - "scripts/deployment_cli.py"
       - "docs/deployment-automation.md"
@@ -50,7 +46,7 @@ jobs:
           python -m json.tool deployment/config.testnet.json >/dev/null
           python -m json.tool deployment/config.mainnet.example.json >/dev/null
 
-      - name: Parse compatibility shell entry points
+      - name: Syntax-check all tracked shell scripts
         shell: bash
         run: |
           bash -n scripts/deploy.sh
