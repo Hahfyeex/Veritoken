@@ -97,6 +97,72 @@ python3 scripts/deployment_cli.py validate-manifest --help
 python3 scripts/deployment_cli.py simulate-upgrade --help
 ```
 
+## Command side effects
+
+Each command below is classified from its implementation in
+`scripts/deployment/cli.py`, `scripts/deployment/runner.py`, and the shell
+wrappers. Only **read-only** commands are safe dry runs: they never submit a
+transaction.
+
+| Command | Effect | Network access | Identity needed | Files written |
+|---|---|---|---|---|
+| `deployment_cli.py plan` | Read-only | None | No | None (prints JSON to stdout) |
+| `deployment_cli.py validate-manifest` | Read-only | None | No | None |
+| `deployment_cli.py simulate-upgrade` (no `--identity`) | Read-only | None | No | Upgrade simulation report |
+| `deployment_cli.py simulate-upgrade --identity <name>` | Read-only | Simulated `schema_version` call | Yes, as source account | Upgrade simulation report |
+| `deployment_cli.py verify` / `verify-deployment.sh` | Read-only | `contract info hash`, `contract info meta`, configured health calls | Optional; defaults to the manifest's source account | Verification report |
+| `scripts/check-drift.sh` | Read-only | None | No | None |
+| `scripts/verify-artifacts.sh` | Build-only | None | No | None (checks existing WASM) |
+| `deploy.sh` build step (`cargo build`, skipped with `DEPLOY_SKIP_BUILD=1`) | Build-only | None | No | `target/wasm32v1-none/release/*.wasm` |
+| `deployment_cli.py deploy` / `deploy.sh` | **Submits transactions** | Upload, deploy, and `initialize` invokes | Yes, signs every transaction | Partial checkpoint, manifest, verification report, `frontend/.env` |
+| `DEPLOY_RESUME=1 deploy.sh` | **Submits transactions** | Remaining upload, deploy, and `initialize` operations | Yes, must match the checkpoint | Same as `deploy` |
+| `scripts/setup-identity.sh` | **Creates and funds a testnet account** | Friendbot (`testnet` only) | Generates a new local key | Stellar CLI key store |
+
+Notes:
+
+- `plan` performs every config, dependency-graph, and mainnet placeholder check
+  that `deploy` does, but stops before any artifact preflight or Stellar CLI
+  call. It does not check that WASM files exist.
+- `verify` and live `simulate-upgrade` use `stellar contract invoke` without
+  `--send`. With the Stellar CLI default, a call is only submitted when
+  simulation shows it writes state or needs authorization. Configured
+  `health_check` functions and `schema_version` are read-only getters, so these
+  commands stay simulation-only. Do not point a `health_check` at a function
+  that writes state.
+- `deploy.sh` always runs the build-only steps (build unless
+  `DEPLOY_SKIP_BUILD=1`, then `verify-artifacts.sh`) before the first
+  transaction. A failure there stops the run with no network mutation.
+- There is no dry-run flag for `deploy`. Use `plan` to review operations first.
+
+### Identity and network selection
+
+- **Identity:** pass a Stellar CLI identity name (never a secret key) as the
+  first argument to `deploy.sh` / `verify-deployment.sh`, or with `--identity`.
+  If neither is set, `deploy` falls back to `STELLAR_IDENTITY`, then `alice`.
+  Confirm the identity before deploying with
+  `stellar keys address <identity>`.
+- **Network:** `--network`, or `STELLAR_NETWORK`, defaults to `testnet`. Set it
+  explicitly for every transaction-submitting command. `mainnet` and `public`
+  require a `production` profile config.
+- **Custom RPC:** `--rpc-url` / `STELLAR_RPC_URL` is used only together with
+  `--network-passphrase` / `STELLAR_NETWORK_PASSPHRASE`. If only one is set, the
+  named network alias is used.
+- `verify` reads the network from the manifest, not from `STELLAR_NETWORK`.
+
+Example of a safe review before a testnet deployment:
+
+```bash
+export STELLAR_NETWORK=testnet
+
+python3 scripts/deployment_cli.py plan \
+  --config deployment/config.testnet.json \
+  --network "$STELLAR_NETWORK"
+
+stellar keys address veritoken-dev
+
+bash scripts/deploy.sh veritoken-dev
+```
+
 ## Upgrade simulation
 
 Soroban contracts here are immutable — an "upgrade" is a full
@@ -301,6 +367,85 @@ Verification fails if any of these diverge:
 The verifier uses `stellar contract info hash` for deployed code identity and
 `stellar contract info meta` for declared contract metadata. It does not infer
 success from a responsive contract ID alone.
+
+### Post-deployment verification example
+
+Verification is a separate, read-only step from deployment: it does not upload
+WASM, deploy contracts, or rewrite `deploy-manifest.json` or `frontend/.env`.
+Run it against a fresh deployment before handing contract IDs to anyone else.
+
+The wrapper takes an optional identity as its only positional argument. The
+manifest and report paths come from `DEPLOY_MANIFEST` and
+`DEPLOY_VERIFICATION_REPORT`:
+
+```bash
+DEPLOY_MANIFEST=deploy-manifest.json \
+DEPLOY_VERIFICATION_REPORT=deployment-verification-report.json \
+  bash scripts/verify-deployment.sh veritoken-dev
+```
+
+The equivalent direct invocation:
+
+```bash
+python3 scripts/deployment_cli.py verify \
+  --manifest deploy-manifest.json \
+  --report deployment-verification-report.json \
+  --identity veritoken-dev
+```
+
+`verify` has no `--network` flag. The network (name, and RPC URL/passphrase
+for custom networks) is read from the manifest, so point `--manifest` at the
+manifest produced for the network you intend to check. `--identity` only
+overrides the source-account identity recorded in the manifest and is used for
+read-only calls; it never needs a secret key in the command line.
+
+The command writes the report, then prints a one-line summary and the report
+path. Illustrative output from a passing run:
+
+```text
+Deployment verification passed: 42 passed, 0 failed.
+Verification report: /path/to/repo/deployment-verification-report.json
+Deployment verified.
+```
+
+The final `Deployment verified.` line is printed by the shell wrapper only. On
+any failed check the command exits `1` and prints
+`Deployment verification failed: <n> passed, <m> failed.` instead.
+
+An abridged, illustrative report is shown below. Contract IDs, hashes, and
+counts are placeholders, not values from a real deployment:
+
+```json
+{
+  "schema_version": 1,
+  "status": "passed",
+  "generated_at": "2025-01-01T00:00:00Z",
+  "deployment_id": "<deployment-id>",
+  "manifest_sha256": "<sha256-of-manifest>",
+  "network": { "name": "testnet" },
+  "checks": [
+    {
+      "contract": "kyc_registry",
+      "check": "deployed_wasm_hash",
+      "status": "passed",
+      "expected": "<local-wasm-sha256>",
+      "actual": "<local-wasm-sha256>"
+    },
+    {
+      "contract": "compliance_engine",
+      "check": "dependency_registry",
+      "status": "passed",
+      "expected": "<kyc-registry-contract-id>",
+      "actual": "<kyc-registry-contract-id>"
+    }
+  ],
+  "summary": { "total": 42, "passed": 42, "failed": 0 }
+}
+```
+
+Hand over contract IDs only when `status` is `passed` and `summary.failed` is
+`0`. A failed check carries a `detail` field where available; fix the cause and
+re-run `verify` rather than redeploying blindly.
 
 ## Environment variables
 

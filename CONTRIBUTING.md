@@ -7,7 +7,8 @@ Thanks for your interest in contributing. Veritoken is a Soroban smart contract 
 ## Prerequisites
 
 - Rust (stable)
-- `wasm32-unknown-unknown` target: `rustup target add wasm32-unknown-unknown`
+- `wasm32v1-none` target: `rustup target add wasm32v1-none` (pinned in
+  `rust-toolchain.toml`, so `rustup` usually installs it automatically)
 - [Stellar CLI](https://developers.stellar.org/docs/tools/developer-tools/cli/stellar-cli)
 - Node.js ≥ 20 (for frontend work)
 
@@ -24,14 +25,21 @@ cd Veritoken
 
 ```bash
 # Check all contracts compile
-cargo check --target wasm32-unknown-unknown
+cargo check --target wasm32v1-none
 
 # Run tests
 cargo test --features testutils
 
-# Build WASM artifacts
-cargo build --release --target wasm32-unknown-unknown
+# Build WASM artifacts (output: target/wasm32v1-none/release/)
+cargo build --release --target wasm32v1-none
 ```
+
+> **Which wasm target?** Local builds and CI both use `wasm32v1-none`, the
+> target pinned in `rust-toolchain.toml`. Older guides that mention
+> `wasm32-unknown-unknown` are out of date — artifacts built with that target
+> land in a different directory and are not picked up by the size or
+> deployment scripts. See
+> [docs/troubleshooting.md](docs/troubleshooting.md#wasm-target-name-mismatch-wasm32v1-none-vs-wasm32-unknown-unknown).
 
 ### Frontend
 
@@ -41,6 +49,34 @@ cp .env.example .env   # fill in your deployed contract IDs
 npm install
 npm run dev
 ```
+
+### Test commands by area
+
+Run the narrowest suite that covers your change. Cargo commands run from the
+repository root; npm commands run from the directory in the **Working dir**
+column. Contract crates expose Soroban test helpers behind the `testutils`
+feature, so pass `--features testutils` where shown (the smoke crate has no
+such feature and must be run without it). None of these commands need
+credentials or a funded account.
+
+| Area | Kind | Working dir | Command |
+| --- | --- | --- | --- |
+| Single contract (e.g. `rwa-token`, `kyc-registry`, `compliance-engine`, `invoice-token`, `property-token`, `carbon-credit-token`, `token-helpers`) | Unit | repo root | `cargo test -p rwa-token --features testutils` |
+| All contracts and Rust test crates | Unit + integration | repo root | `cargo test --features testutils` |
+| Cross-contract integration suite | Integration | repo root | `cargo test -p integration-tests --features testutils` |
+| Smoke tests | Integration | repo root | `cargo test -p smoke-tests` |
+| Property-based fuzz tests | Integration | repo root | `cargo test -p fuzz-tests --features testutils` |
+| Dividend regression tests | Integration | repo root | `cargo test -p dividend-regression-tests --features testutils` |
+| SDK | Unit | `sdk/` | `npm test` |
+| Frontend (all) | Unit | `frontend/` | `npm test` |
+| Frontend (one file) | Unit | `frontend/` | `npx vitest run src/lib/__tests__/drafts.test.ts` |
+| Integration fixtures (no network) | Unit | `tests/integration/` | `npm run test:unit` |
+| Lifecycle against local quickstart | Integration | `tests/integration/` | `npm run test:lifecycle` (requires `cargo build --release --target wasm32-unknown-unknown` and `docker compose up -d` first) |
+| Browser end-to-end | Integration | `tests/e2e/` | `npm test` (requires Docker and built WASMs; see `tests/e2e/README.md`) |
+
+Install dependencies once with `npm install` from the repository root (covers
+the `frontend` and `sdk` workspaces); `tests/integration` and `tests/e2e` are
+separate installs inside their own directories.
 
 ---
 
@@ -53,11 +89,38 @@ All incoming issues and pull requests must conform to the new template files. Se
 3. Ensure the following pass before opening a PR:
    ```bash
    cargo fmt --check
-   cargo clippy --target wasm32-unknown-unknown
+   cargo clippy --target wasm32v1-none
    cargo test --features testutils
    ```
 4. For frontend changes: `npm run build` and `npm run lint` must pass
-5. Open a pull request against `main` with a clear description of what and why
+5. For shell script changes, syntax-check every changed script (see
+   [Shell script checks](#shell-script-checks))
+6. Open a pull request against `main` with a clear description of what and why
+
+---
+
+## Shell script checks
+
+Shell scripts under `scripts/` and `deployment/` drive deployment and admin
+workflows, so syntax errors should be caught before review rather than during
+a deploy. `bash -n` parses a script without executing it — it needs no
+secrets, network access, or Stellar identity.
+
+Check the scripts you changed:
+
+```bash
+git diff --name-only --diff-filter=d origin/main -- '*.sh' | xargs -r -n1 bash -n
+```
+
+Or check every tracked script (the same command CI runs in the
+`Deployment automation suite` workflow):
+
+```bash
+git ls-files -z '*.sh' | xargs -0 -r -n1 bash -n
+```
+
+No output means every script parsed successfully. `bash -n` catches syntax
+errors only; it does not run the script or validate its logic.
 
 ---
 
@@ -70,7 +133,7 @@ Before adding a new feature to an existing contract, check the current binary
 size:
 
 ```bash
-cargo build --release --target wasm32-unknown-unknown
+cargo build --release --target wasm32v1-none
 bash scripts/check-wasm-size.sh --print-sizes
 ```
 

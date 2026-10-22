@@ -34,9 +34,14 @@ function ToastItem({ toast, onRemove }: { toast: Toast; onRemove: (id: number) =
   }, [toast.id, onRemove]);
 
   const c = COLOR[toast.type];
+  // Errors interrupt the screen reader; success/info wait for a pause.
+  const isError = toast.type === "error";
   return (
     <div
-      role="status"
+      role={isError ? "alert" : "status"}
+      aria-live={isError ? "assertive" : "polite"}
+      aria-atomic="true"
+      data-toast-type={toast.type}
       style={{
         display: "flex",
         justifyContent: "space-between",

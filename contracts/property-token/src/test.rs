@@ -1577,3 +1577,310 @@ fn test_self_transfer_rejected() {
     // Attempt to transfer from alice to alice — should panic.
     h.token.transfer(&alice, &alice, &50);
 }
+
+// ── Issue #956: Rent and capital claims remain separated ─────────────────────
+//
+// Regression guard: depositing one Rent distribution and one Capital
+// distribution must never allow rent to be withdrawn via claim_capital_return
+// or capital to be withdrawn via claim_rent_yield.  The typed unclaimed
+// balances must also stay self-consistent after each partial claim.
+
+#[test]
+fn test_956_rent_claim_does_not_withdraw_capital() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    // 1000 total shares; alice holds all of them.
+    h.token.mint(&alice, &1_000);
+
+    // Deposit 1 000 stroops as Rent, then 2 000 stroops as Capital.
+    h.token.deposit_dividend(&1_000, &0); // Rent
+    h.token.deposit_dividend(&2_000, &1); // Capital
+
+    // Inspect typed unclaimed balances before any claim.
+    let before = h.token.unclaimed_balance(&alice);
+    assert_eq!(before.rent, 1_000);
+    assert_eq!(before.capital, 2_000);
+    assert_eq!(before.total, 3_000);
+
+    // Claiming rent must yield exactly the Rent amount and leave Capital intact.
+    let rent_claimed = h.token.claim_rent_yield(&alice);
+    assert_eq!(rent_claimed, 1_000, "claim_rent_yield must return only the Rent amount");
+
+    let after_rent = h.token.unclaimed_balance(&alice);
+    assert_eq!(after_rent.rent, 0, "rent must be zeroed after claim_rent_yield");
+    assert_eq!(
+        after_rent.capital, 2_000,
+        "capital must be untouched after claim_rent_yield"
+    );
+    assert_eq!(after_rent.total, 2_000, "total must equal remaining capital");
+
+    // Claiming rent a second time must yield nothing — no cross-type bleed.
+    let rent_again = h.token.claim_rent_yield(&alice);
+    assert_eq!(rent_again, 0, "second claim_rent_yield must return 0");
+
+    // Capital claim must now return the full Capital amount.
+    let cap_claimed = h.token.claim_capital_return(&alice);
+    assert_eq!(cap_claimed, 2_000, "claim_capital_return must return only the Capital amount");
+
+    let after_cap = h.token.unclaimed_balance(&alice);
+    assert_eq!(after_cap.capital, 0, "capital must be zeroed after claim_capital_return");
+    assert_eq!(after_cap.rent, 0, "rent must still be zero");
+    assert_eq!(after_cap.total, 0, "total must be zero once both typed claims are exhausted");
+
+    // Pool must be fully drained (dust-reserve aside).
+    let dust = h.token.dust_reserve();
+    assert_eq!(
+        h.token.dividend_pool(),
+        dust,
+        "dividend pool must equal dust reserve after all typed claims"
+    );
+}
+
+#[test]
+fn test_956_capital_claim_does_not_withdraw_rent() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &1_000);
+
+    h.token.deposit_dividend(&3_000, &1); // Capital only
+    h.token.deposit_dividend(&1_500, &0); // Rent only
+
+    let before = h.token.unclaimed_balance(&alice);
+    assert_eq!(before.capital, 3_000);
+    assert_eq!(before.rent, 1_500);
+    assert_eq!(before.total, 4_500);
+
+    // Claim capital first; rent must remain untouched.
+    let cap = h.token.claim_capital_return(&alice);
+    assert_eq!(cap, 3_000);
+
+    let after_cap = h.token.unclaimed_balance(&alice);
+    assert_eq!(after_cap.capital, 0);
+    assert_eq!(after_cap.rent, 1_500, "rent must be unaffected by claim_capital_return");
+    assert_eq!(after_cap.total, 1_500);
+
+    // Claim remaining rent.
+    let rent = h.token.claim_rent_yield(&alice);
+    assert_eq!(rent, 1_500);
+    assert_eq!(h.token.unclaimed_balance(&alice).total, 0);
+}
+
+#[test]
+fn test_956_typed_claims_independent_across_multiple_holders() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+
+    h.token.mint(&alice, &600);
+    h.token.mint(&bob, &400);
+
+    h.token.deposit_dividend(&1_000, &0); // Rent: alice=600, bob=400
+    h.token.deposit_dividend(&1_000, &1); // Capital: alice=600, bob=400
+
+    // Alice claims only rent.
+    assert_eq!(h.token.claim_rent_yield(&alice), 600);
+    // Bob has not claimed; his balances must be untouched.
+    let bob_unc = h.token.unclaimed_balance(&bob);
+    assert_eq!(bob_unc.rent, 400);
+    assert_eq!(bob_unc.capital, 400);
+
+    // Alice's capital is still pending; her rent is gone.
+    let alice_unc = h.token.unclaimed_balance(&alice);
+    assert_eq!(alice_unc.rent, 0);
+    assert_eq!(alice_unc.capital, 600);
+
+    // Bob claims capital; his rent must remain.
+    assert_eq!(h.token.claim_capital_return(&bob), 400);
+    let bob_after = h.token.unclaimed_balance(&bob);
+    assert_eq!(bob_after.capital, 0);
+    assert_eq!(bob_after.rent, 400, "bob's rent must survive after capital claim");
+}
+
+// ── Issue #958: Forced transfers append exactly one audit record ──────────────
+//
+// A successful forced transfer must increment ForcedTransferCount by exactly 1
+// and write a log entry with the correct fields.  A rejected forced transfer
+// (e.g. insufficient shares) must not write any log entry.
+
+#[test]
+fn test_958_successful_forced_transfer_appends_one_audit_record() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.token.mint(&alice, &500);
+
+    // Baseline: no forced transfers yet.
+    let count_before = h.token.forced_transfer_count();
+    assert_eq!(count_before, 0);
+
+    h.token.forced_transfer(&alice, &bob, &200);
+
+    // Exactly one record must have been appended.
+    let count_after = h.token.forced_transfer_count();
+    assert_eq!(
+        count_after,
+        count_before + 1,
+        "forced_transfer_count must increment by exactly 1"
+    );
+
+    // The log entry must reflect the actual transfer.
+    let log = h.token.get_forced_transfer_log(&0, &10);
+    assert_eq!(log.len(), 1, "log must contain exactly one entry");
+    let entry = log.get(0).unwrap();
+    assert_eq!(entry.from, alice, "log entry from address must match");
+    assert_eq!(entry.to, bob, "log entry to address must match");
+    assert_eq!(entry.shares, 200, "log entry shares must match");
+}
+
+#[test]
+fn test_958_failed_forced_transfer_does_not_append_audit_record() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.token.mint(&alice, &100);
+
+    let count_before = h.token.forced_transfer_count();
+
+    // Attempt to force-transfer more shares than alice holds — must fail.
+    let result = h.token.try_forced_transfer(&alice, &bob, &101);
+    assert!(result.is_err(), "forced_transfer with insufficient shares must fail");
+
+    // Count must be unchanged — no partial log entry.
+    assert_eq!(
+        h.token.forced_transfer_count(),
+        count_before,
+        "forced_transfer_count must not change after a failed forced transfer"
+    );
+}
+
+#[test]
+fn test_958_multiple_forced_transfers_each_append_one_record() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let carol = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.approve_kyc(&carol);
+    h.token.mint(&alice, &900);
+
+    h.token.forced_transfer(&alice, &bob, &300);
+    h.token.forced_transfer(&alice, &carol, &200);
+
+    assert_eq!(h.token.forced_transfer_count(), 2);
+    let log = h.token.get_forced_transfer_log(&0, &10);
+    assert_eq!(log.len(), 2);
+
+    let first = log.get(0).unwrap();
+    assert_eq!(first.to, bob);
+    assert_eq!(first.shares, 300);
+
+    let second = log.get(1).unwrap();
+    assert_eq!(second.to, carol);
+    assert_eq!(second.shares, 200);
+}
+
+// ── Issue #959: Holder pagination at empty and final pages ───────────────────
+//
+// get_holders() is backed by the legacy HolderList (populated only by
+// migrate_schema from pre-v2 data).  On a freshly deployed v2 contract the
+// list is always empty, so every pagination scenario returns an empty result.
+// These tests pin that stable behavior for all boundary conditions callers
+// may encounter: no holders, exact-length page, partial last page, and a
+// start offset beyond the end.
+
+#[test]
+fn test_959_get_holders_empty_when_no_holders_registered() {
+    let h = setup();
+    // No mints at all — holder list must be empty.
+    let result = h.token.get_holders(&0, &10);
+    assert_eq!(result.len(), 0, "get_holders must return empty list when no holders exist");
+}
+
+#[test]
+fn test_959_get_holders_empty_after_mints_on_fresh_v2_contract() {
+    // On a v2 contract (no migrate_schema run), new mints write IsHolder flags
+    // only; the legacy HolderList is never populated.  get_holders must
+    // therefore always return an empty vec, regardless of holder count.
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let carol = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.approve_kyc(&carol);
+    h.token.mint(&alice, &10);
+    h.token.mint(&bob, &20);
+    h.token.mint(&carol, &30);
+
+    // O(1) holder tracking via IsHolder / HolderCount is correct.
+    assert_eq!(h.token.holder_count(), 3);
+    assert!(h.token.is_holder(&alice));
+    assert!(h.token.is_holder(&bob));
+    assert!(h.token.is_holder(&carol));
+
+    // But the paginated legacy list is empty — no duplicates, no omissions.
+    assert_eq!(h.token.get_holders(&0, &50).len(), 0);
+    assert_eq!(h.token.get_holders(&0, &3).len(), 0);
+}
+
+#[test]
+fn test_959_get_holders_start_beyond_end_returns_empty() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &100);
+
+    // Start offset beyond any possible list length must return empty, not panic.
+    let result = h.token.get_holders(&1_000_000, &10);
+    assert_eq!(
+        result.len(),
+        0,
+        "get_holders with start beyond list end must return empty vec"
+    );
+}
+
+#[test]
+fn test_959_get_holders_limit_zero_returns_empty() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &100);
+
+    let result = h.token.get_holders(&0, &0);
+    assert_eq!(result.len(), 0, "get_holders with limit=0 must return empty vec");
+}
+
+#[test]
+fn test_959_holder_count_and_is_holder_remain_accurate_independent_of_get_holders() {
+    // This test makes explicit the contract between get_holders (legacy enumeration)
+    // and the O(1) is_holder / holder_count API that operational tooling should use.
+    let h = setup();
+    let addresses: Vec<Address> = (0..5).map(|_| Address::generate(&h.env)).collect();
+    for addr in &addresses {
+        h.approve_kyc(addr);
+        h.token.mint(addr, &1);
+    }
+
+    assert_eq!(h.token.holder_count(), 5);
+    for addr in &addresses {
+        assert!(h.token.is_holder(addr));
+    }
+    // get_holders is empty (v2 contract — no legacy migration data).
+    assert_eq!(h.token.get_holders(&0, &50).len(), 0);
+
+    // Transfer one holder's balance to zero; count must drop.
+    h.token.transfer(&addresses[0], &addresses[1], &1);
+    assert_eq!(h.token.holder_count(), 4);
+    assert!(!h.token.is_holder(&addresses[0]));
+    // get_holders is still empty.
+    assert_eq!(h.token.get_holders(&0, &50).len(), 0);
+}

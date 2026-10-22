@@ -22,23 +22,68 @@ concrete fix.
 
 ## 1. Environment Setup
 
-### Missing `wasm32-unknown-unknown` target
+### Missing `wasm32v1-none` target
 
 **Symptom**
 ```
-error[E0463]: can't find crate for `std`
-   = note: the `wasm32-unknown-unknown` target may not be installed
+error[E0463]: can't find crate for `core`
+   = note: the `wasm32v1-none` target may not be installed
 ```
 
 **Fix**
 ```bash
-rustup target add wasm32-unknown-unknown
+rustup target add wasm32v1-none
 ```
 
 Verify the target is present:
 ```bash
-rustup target list --installed | grep wasm32
+rustup target list --installed | grep wasm32v1-none
 ```
+
+---
+
+### WASM target name mismatch (`wasm32v1-none` vs `wasm32-unknown-unknown`)
+
+**Symptom**
+Contracts build, but `scripts/check-wasm-size.sh`, `scripts/verify-artifacts.sh`
+or `scripts/deploy.sh` report that `target/wasm32v1-none/release` is missing,
+or CI fails while your local build succeeded.
+
+**Cause**
+The project targets `wasm32v1-none`. Older documentation and Soroban tutorials
+use `wasm32-unknown-unknown`, which writes artifacts to
+`target/wasm32-unknown-unknown/release/` — a directory none of the repository
+scripts read.
+
+**Which target is used where**
+
+| Context | Target | Source of truth |
+|---|---|---|
+| Local builds | `wasm32v1-none` | `rust-toolchain.toml` (`targets = ["wasm32v1-none"]`) |
+| CI (`ci.yml`, `build.yml`, `release.yml`, deploy/e2e/integration workflows) | `wasm32v1-none` | `dtolnay/rust-toolchain` step with `targets: wasm32v1-none` |
+| Scripts (`check-wasm-size.sh`, `verify-artifacts.sh`, `deploy.sh`) | `wasm32v1-none` | default `WASM_DIR=target/wasm32v1-none/release` |
+
+**Fix — local setup**
+```bash
+rustup target add wasm32v1-none
+cargo build --release --target wasm32v1-none
+ls target/wasm32v1-none/release/*.wasm
+```
+
+**Fix — matching CI locally**
+CI installs the target through the toolchain action and then runs:
+```bash
+cargo build --release --target wasm32v1-none \
+  --workspace \
+  --exclude integration-tests \
+  --exclude fuzz-tests \
+  --exclude smoke-tests \
+  --exclude dividend-regression-tests
+WASM_DIR=target/wasm32v1-none/release bash scripts/verify-artifacts.sh
+```
+
+Do not change `rust-toolchain.toml` to work around the mismatch; update the
+command you are running instead.
 
 ---
 
@@ -176,12 +221,12 @@ codegen-units = 1
 
 Then optimize the specific binary:
 ```bash
-stellar contract optimize --wasm target/wasm32-unknown-unknown/release/<contract>.wasm
+stellar contract optimize --wasm target/wasm32v1-none/release/<contract>.wasm
 ```
 
 Check the resulting sizes:
 ```bash
-ls -lh target/wasm32-unknown-unknown/release/*.wasm
+ls -lh target/wasm32v1-none/release/*.wasm
 ```
 
 ---
@@ -211,13 +256,13 @@ Check that newly added dependencies declare `default-features = false`.
 ### Build succeeds but WASM output is missing
 
 **Symptom**
-`target/wasm32-unknown-unknown/release/` does not contain the expected `.wasm`
+`target/wasm32v1-none/release/` does not contain the expected `.wasm`
 file after `cargo build`.
 
 **Fix**
 Build against the correct target and profile:
 ```bash
-cargo build --release --target wasm32-unknown-unknown
+cargo build --release --target wasm32v1-none
 ```
 
 The output filename is derived from the crate `[package] name` with hyphens

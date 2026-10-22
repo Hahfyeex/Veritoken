@@ -19,6 +19,7 @@ For runnable, end-to-end examples (including this SDK vs. raw JS/Python), see
 - [Building clients: `createClients` / `ClientFactory`](#building-clients-createclients--clientfactory)
 - [Contract-by-contract reference](#contract-by-contract-reference)
 - [Error handling](#error-handling)
+- [Retries and timeouts](#retries-and-timeouts)
 - [Event parsing](#event-parsing)
 - [Auth helpers](#auth-helpers)
 - [Testing your integration](#testing-your-integration)
@@ -73,7 +74,9 @@ await rwaToken?.transfer(fromAddress, toAddress, 100n, signTx);
 
 Every write follows the same internal pipeline: build → simulate → assemble →
 sign (via your `signTx`) → submit → poll for confirmation. You get back the
-confirmed `GetSuccessfulTransactionResponse`, or the call throws.
+confirmed `GetSuccessfulTransactionResponse`, or the call throws. See
+[Retries and timeouts](#retries-and-timeouts) for which stages are retried and
+how long confirmation can take.
 
 ## Network configuration
 
@@ -262,6 +265,103 @@ try {
 match a known Soroban contract-error pattern. `ContractName` is one of
 `"rwa" | "carbon" | "invoice" | "property" | "kyc" | "compliance"` — pass the
 same short name a client was constructed with.
+
+## Retries and timeouts
+
+Every client read and write goes through `TxPipeline`
+([src/pipeline.ts](src/pipeline.ts)). Its behaviour is controlled by
+`PipelineOptions`:
+
+| Option | Default | Meaning |
+|---|---|---|
+| `maxRetries` | `3` | Extra attempts after a transient RPC failure (so up to 4 attempts in total) |
+| `initialBackoffMs` | `400` | Delay before the first retry; doubles each retry, capped at 8 s |
+| `confirmTimeoutMs` | `60_000` | How long to poll `getTransaction` after a successful submit |
+| `pollIntervalMs` | `1_500` | Delay between confirmation polls |
+| `timeoutSeconds` | `30` | Transaction validity window set on the transaction (`TransactionBuilder.setTimeout`); unrelated to polling |
+
+The six built-in clients (and `createClients` / `ClientFactory`) always use
+these defaults. To change them, construct a `TxPipeline` yourself
+(`new TxPipeline(server, networkPassphrase, { confirmTimeoutMs: 120_000 })`)
+or pass `PipelineOptions` as the fifth constructor argument of a
+`BaseContractClient` subclass.
+
+**What is retried.** A write attempt runs sequence → build → simulate →
+assemble → sign → submit → poll. When an attempt fails, the pipeline retries
+the **whole attempt** (re-simulating and calling your `signTx` again) only if
+the error is not one of the typed errors below and its message matches
+`isTransientError` (timeouts, `ECONNRESET`, `ECONNREFUSED`, `ETIMEDOUT`,
+`ENOTFOUND`, socket hang-ups, `network`, `429`, `502`, `503`,
+`TRY_AGAIN_LATER`). Any other error is thrown immediately. Reads retry only
+the `simulateTransaction` call, using the same rules.
+
+| Stage | Failure | Retried? | Surfaced as |
+|---|---|---|---|
+| Sequence fetch | `getAccount` fails | No | `SequenceError` |
+| Simulation | RPC transport error | Yes, if transient | `TransientError` once retries run out |
+| Simulation | Contract rejected the call | No | `SimulationError` |
+| Signing | `signTx` throws or returns empty | No | `SigningError` |
+| **Submission** | `sendTransaction` throws (transport) | Yes, if transient; the cached sequence is refreshed first | `TransientError` once retries run out |
+| **Submission** | Network returns `status: "ERROR"` | No | `SubmissionError` |
+| **Confirmation** | Still `NOT_FOUND` at the deadline | No | `TimeoutError` (`txHash`, `elapsedMs`) |
+| **Confirmation** | Final status other than `SUCCESS` | No | `ConfirmError` (`txHash`, `finalStatus`) |
+| **Confirmation** | `getTransaction` throws (transport) | Yes, if transient: the **entire write** is rebuilt, re-signed and resubmitted | `TransientError` once retries run out |
+
+Things the SDK does **not** guarantee:
+
+- **Submission and confirmation are separate steps.** Once `sendTransaction`
+  accepts the transaction, the SDK only polls for its result. A
+  `TimeoutError` means the SDK stopped waiting, not that the transaction
+  failed: it may still have landed.
+- **No de-duplication.** A retry after a transport error during submission
+  or confirmation sends a *new* signed transaction. If the original actually
+  reached the network, a non-idempotent call (for example `issue` or
+  `transfer`) can be applied twice. Your `signTx` callback also runs again,
+  so wallet users may be prompted more than once.
+- **No overall time bound.** Polling checks the deadline before each sleep, so
+  confirmation can take up to about `confirmTimeoutMs + pollIntervalMs` plus
+  RPC latency. Each retry adds backoff plus a full new attempt, so the total
+  duration of a `write` has no fixed upper limit.
+- `TimeoutError` is not on the explicit no-retry list. It goes through the same
+  message check, so a hash or elapsed time containing `429`, `502` or `503`
+  can trigger a retry of the whole write.
+
+**Handling errors.** The pipeline errors all extend `TxError` and carry a
+machine-readable `kind` (`"sequence" | "simulation" | "signing" |
+"submission" | "confirm" | "timeout" | "transient"`) plus the original
+`cause`. When the message contains a Soroban contract error code
+(`Error(Contract, #N)`), client methods rethrow it as a plain `Error` with a
+readable message prepended (see [Error handling](#error-handling)). Other
+errors keep their `TxError` subclass. Example: a confirmation timeout on
+`redeem`:
+
+```ts
+import { TimeoutError, TransientError, TxError } from "@veritoken/sdk";
+
+try {
+  await invoice.redeem(holder, 1_000n, signTx);
+} catch (err) {
+  if (err instanceof TimeoutError) {
+    // Submitted but unconfirmed after ~60 s. Check before resubmitting.
+    const status = await server.getTransaction(err.txHash);
+    if (status.status === "NOT_FOUND") showPending(err.txHash);
+    else if (status.status === "SUCCESS") markRedeemed(err.txHash);
+    else showFailed(err.txHash, status.status);
+  } else if (err instanceof TransientError) {
+    showRetryLater(err.message); // RPC still unreachable after maxRetries
+  } else if (err instanceof TxError) {
+    showError(err.kind, err.message);
+  } else {
+    // e.g. "Insufficient token balance (InsufficientBalance #9)"
+    showError("contract", invoice.formatError(err));
+  }
+}
+```
+
+Typed error reference: the `TxError` hierarchy in
+[src/pipeline.ts](src/pipeline.ts), contract error codes in
+[src/errors.ts](src/errors.ts), and the per-contract **Errors** tables in
+[../docs/contract-api-reference.md](../docs/contract-api-reference.md).
 
 ## Event parsing
 

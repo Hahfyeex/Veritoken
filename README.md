@@ -69,7 +69,7 @@ verification report. See
 [docs/deployment-automation.md](docs/deployment-automation.md) for planning,
 resume, mainnet configuration, and verification details.
 
-**Prerequisites:** Rust, `wasm32-unknown-unknown` target, Stellar CLI, Node.js ≥ 20
+**Prerequisites:** Rust, `wasm32v1-none` target (`rustup target add wasm32v1-none`), Stellar CLI, Node.js ≥ 20
 
 ```bash
 # Clone
@@ -124,7 +124,7 @@ See [docs/docker-environment.md](docs/docker-environment.md) for full instructio
 ### Build contracts only
 
 ```bash
-cargo build --release --target wasm32-unknown-unknown
+cargo build --release --target wasm32v1-none
 ```
 
 ### Run tests
@@ -148,8 +148,9 @@ A React + Vite dashboard ships with the kit, wired to Freighter wallet and the S
 
 Copy `frontend/.env.example` to `frontend/.env` and fill in your deployed contract IDs to connect the UI to any network.
 
----
+For the carbon-credit unit convention, supply lifecycle, retirement behavior, and receipt lookup API, see [docs/carbon-credit-token.md](docs/carbon-credit-token.md). One on-chain token unit represents one metric tonne of CO2e, with `decimals() == 0`.
 
+---
 ## Extending Veritoken
 
 The kit is designed to be forked and customised:
@@ -249,6 +250,7 @@ Veritoken/
 | [docs/community-showcase.md](docs/community-showcase.md) | Community integrations, extensions, and reference implementations built on Veritoken |
 | [docs/gas-report.md](docs/gas-report.md) | Baseline gas and performance measurements |
 | [docs/security-checklist.md](docs/security-checklist.md) | Security review checklist and hardening playbook |
+| [docs/carbon-credit-token.md](docs/carbon-credit-token.md) | Carbon-credit units, supply lifecycle, retirement semantics, and receipt lookup |
 | [sdk/README.md](sdk/README.md) | TypeScript SDK guide: getting started, multi-network configuration, per-contract reference, error/event handling, adding a new contract client |
 
 ---
@@ -282,7 +284,7 @@ For detailed instructions, please see [CONTRIBUTING.md](CONTRIBUTING.md).
 3. Commit your changes
 4. Open a pull request against `main`
 
-Please ensure `cargo check --target wasm32-unknown-unknown` and `cargo test --features testutils` pass before submitting.
+Please ensure `cargo check --target wasm32v1-none` and `cargo test --features testutils` pass before submitting.
 
 ---
 

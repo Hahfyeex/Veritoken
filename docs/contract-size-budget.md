@@ -1,8 +1,8 @@
 # Contract Size Budget
 
 Every Soroban contract in this repository has an enforced maximum WASM binary
-size. The budget is checked automatically in CI on every push and pull request,
-and can also be run locally.
+size. The hard cap is checked automatically in CI on every push and pull
+request, and the per-contract budgets can also be checked locally.
 
 ---
 
@@ -21,16 +21,30 @@ and can also be run locally.
 
 | Contract WASM | Budget |
 |---|---|
-| `kyc_registry.wasm` | 200 KB |
-| `compliance_engine.wasm` | 200 KB |
-| `rwa_token.wasm` | 256 KB |
-| `invoice_token.wasm` | 256 KB |
-| `property_token.wasm` | 256 KB |
-| `carbon_credit_token.wasm` | 200 KB |
-| `token_helpers.wasm` | 64 KB |
-| _(any other .wasm)_ | 256 KB (default) |
+| `kyc_registry.wasm` | 128 KB (131072 bytes) |
+| `compliance_engine.wasm` | 128 KB (131072 bytes) |
+| `rwa_token.wasm` | 128 KB (131072 bytes) |
+| `invoice_token.wasm` | 128 KB (131072 bytes) |
+| `property_token.wasm` | 128 KB (131072 bytes) |
+| `carbon_credit_token.wasm` | 128 KB (131072 bytes) |
+| `token_helpers.wasm` | 64 KB (65536 bytes) |
+| _(any other .wasm)_ | 128 KB (default) |
 
-Budgets include ~20 % headroom above the baseline measured binary size.
+**The authoritative limit is the 128 KB (131072-byte) CI cap.** No per-contract
+budget may exceed it; a budget may only be tighter (as with `token_helpers`).
+
+---
+
+## Which command enforces which check
+
+| Check | Command | Threshold | Runs in CI? |
+|---|---|---|---|
+| Deployment artifact bounds (existence, WASM magic bytes, 4 KB min, 128 KB max) | `bash scripts/verify-artifacts.sh` | `MAX_BYTES=131072` | Yes — `rust` job in `.github/workflows/ci.yml` |
+| CI size report for every built `.wasm` | inline "Check WASM sizes against CI threshold" step | `THRESHOLD_BYTES=131072` | Yes — `rust` job in `.github/workflows/ci.yml` |
+| Per-contract budgets with near-limit (≥ 90 %) warnings | `bash scripts/check-wasm-size.sh` | `BUDGETS` table (≤ 131072) | No — local pre-PR check |
+
+`MAX_BYTES` in `scripts/verify-artifacts.sh` and `THRESHOLD_BYTES` in
+`.github/workflows/ci.yml` must always hold the same value.
 
 ---
 
@@ -39,8 +53,14 @@ Budgets include ~20 % headroom above the baseline measured binary size.
 Build first, then run the check script:
 
 ```bash
-cargo build --release --target wasm32-unknown-unknown
+cargo build --release --target wasm32v1-none
 bash scripts/check-wasm-size.sh
+```
+
+To run the same checks CI enforces:
+
+```bash
+WASM_DIR=target/wasm32v1-none/release bash scripts/verify-artifacts.sh
 ```
 
 To print sizes without enforcing limits (useful when measuring a new baseline):
@@ -53,9 +73,11 @@ bash scripts/check-wasm-size.sh --print-sizes
 
 ## CI integration
 
-The `rust` job in `.github/workflows/ci.yml` runs the check script after every
-release WASM build. A contract that exceeds its budget fails CI immediately,
-preventing the oversized binary from being merged.
+After every release WASM build, the `rust` job in `.github/workflows/ci.yml`
+runs `scripts/verify-artifacts.sh` and then the inline size-threshold step. A
+contract that exceeds the 128 KB cap fails CI immediately, preventing the
+oversized binary from being merged. `scripts/check-wasm-size.sh` is not run in
+CI; use it locally to catch contracts approaching their budget.
 
 ---
 
@@ -88,8 +110,11 @@ If the growth is intentional and unavoidable:
 
 1. Update the `BUDGETS` table in `scripts/check-wasm-size.sh`.
 2. Update the table in this file.
-3. Add a dated entry to the *Budget history* section below explaining why.
-4. Open a PR — the change will be reviewed alongside the feature that caused it.
+3. If a budget must exceed 128 KB, raise `MAX_BYTES` in
+   `scripts/verify-artifacts.sh` and `THRESHOLD_BYTES` in
+   `.github/workflows/ci.yml` to the same value in the same PR.
+4. Add a dated entry to the *Budget history* section below explaining why.
+5. Open a PR — the change will be reviewed alongside the feature that caused it.
 
 ---
 
@@ -98,3 +123,4 @@ If the growth is intentional and unavoidable:
 | Date | Contract | Old budget | New budget | Reason |
 |---|---|---|---|---|
 | 2026-07-28 | all | — | initial | Initial size budget established |
+| 2026-10-21 | all except `token_helpers` | 200–256 KB | 128 KB | Aligned with the 128 KB cap already enforced by CI; previous values could never pass CI |

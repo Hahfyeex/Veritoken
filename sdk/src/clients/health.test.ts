@@ -51,6 +51,25 @@ describe("ComplianceEngineClient.health()", () => {
     expect(h.holderCount).toBeNull();
     expect(h.error).toMatch("connection refused");
   });
+
+  it("reports an RPC timeout as unavailable with its diagnostic message", async () => {
+    const srv = mockServer();
+    const timeout = Object.assign(new Error("RPC request timed out after 5000ms"), {
+      code: "ETIMEDOUT",
+    });
+    (srv.getLatestLedger as ReturnType<typeof import("vitest").vi.fn>).mockRejectedValueOnce(
+      timeout,
+    );
+    const c = new ComplianceEngineClient(CONTRACT_ID, srv, PASSPHRASE);
+
+    const h = await c.health();
+
+    expect(h.reachable).toBe(false);
+    expect(h.latestLedger).toBeNull();
+    expect(h.paused).toBeNull();
+    expect(h.holderCount).toBeNull();
+    expect(h.error).toBe("RPC request timed out after 5000ms");
+  });
 });
 
 describe("KycRegistryClient.health()", () => {

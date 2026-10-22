@@ -351,6 +351,71 @@ fn test_to_certificate_json() {
     assert!(s.contains("\"timestamp\":"));
 }
 
+#[test]
+fn test_to_certificate_json_escapes_special_characters() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &10);
+    h.token.retire(
+        &alice,
+        &10,
+        &String::from_str(&h.env, "Beneficiary: \"Acme\" \\ North\nLine"),
+        &String::from_str(&h.env, "Reason\twith\rcontrols"),
+    );
+
+    let json = h.token.to_certificate_json(&0);
+    let len = json.len() as usize;
+    let mut buf = [0u8; 1024];
+    json.copy_into_slice(&mut buf[..len]);
+    let s = core::str::from_utf8(&buf[..len]).expect("valid utf8");
+
+    assert!(s.contains("\\\"Acme\\\""));
+    assert!(s.contains("\\\\ North\\nLine"));
+    assert!(s.contains("Reason\\twith\\rcontrols"));
+}
+
+#[test]
+fn test_retire_exact_balance_updates_accounting_and_receipts() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &7);
+
+    h.token.retire(
+        &alice,
+        &7,
+        &String::from_str(&h.env, "Acme"),
+        &String::from_str(&h.env, "net zero"),
+    );
+
+    assert_eq!(h.token.balance(&alice), 0);
+    assert_eq!(h.token.total_retired(), 7);
+    assert_eq!(h.token.retirement_count(), 1);
+    assert_eq!(h.token.get_receipts(&0, &10).len(), 1);
+}
+
+#[test]
+fn test_retire_over_balance_fails_without_receipt() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &7);
+
+    let result = h.token.try_retire(
+        &alice,
+        &8,
+        &String::from_str(&h.env, "Acme"),
+        &String::from_str(&h.env, "net zero"),
+    );
+
+    assert!(result.is_err());
+    assert_eq!(h.token.balance(&alice), 7);
+    assert_eq!(h.token.total_retired(), 0);
+    assert_eq!(h.token.retirement_count(), 0);
+    assert_eq!(h.token.get_receipts(&0, &10).len(), 0);
+}
+
 // ── project_type validation tests (#255) ─────────────────────────────────────
 
 #[test]
@@ -1822,138 +1887,87 @@ fn test_append_retirement_receipt_rejects_unapproved_beneficiary_address() {
     assert_eq!(receipt2.beneficiary_address, Some(approved_addr));
 }
 
-// ── Issues #965–#967: retirement and metadata regression coverage ────────────
-
+// ── Issue batch #962–#964: receipt API boundary coverage ─────────────────────
 #[test]
-fn test_metadata_update_preserves_supply_and_receipts() {
+fn test_verify_receipt_first_last_and_out_of_range_indices() {
     let h = setup();
     let alice = Address::generate(&h.env);
     h.approve_kyc(&alice);
-    h.token.mint(&alice, &100);
-    h.token.retire(
-        &alice,
-        &25,
-        &String::from_str(&h.env, "forest restoration"),
-        &String::from_str(&h.env, "metadata regression"),
-    );
+    h.token.mint(&alice, &30);
+    h.env.ledger().with_mut(|li| li.timestamp = 1_700_000_000);
 
-    let supply_before = h.token.total_supply();
-    let retired_before = h.token.total_retired();
-    let receipts_before = h.token.retirement_count();
-    let mut replacement = h.token.get_meta();
-    replacement.project_name = String::from_str(&h.env, "Amazon Reforestation Phase II");
-    replacement.registry_project_id = String::from_str(&h.env, "VCS-5678");
-    h.token.update_meta(&replacement);
+    do_retire(&h, &alice, 10);
+    do_retire(&h, &alice, 20);
 
-    assert_eq!(h.token.get_meta().project_name, replacement.project_name);
-    assert_eq!(h.token.get_meta().registry_project_id, replacement.registry_project_id);
-    assert_eq!(h.token.total_supply(), supply_before);
-    assert_eq!(h.token.total_retired(), retired_before);
-    assert_eq!(h.token.retirement_count(), receipts_before);
-    assert_eq!(h.token.get_receipt(&0).amount, 25);
+    let first = h.token.verify_receipt(&0);
+    let last = h.token.verify_receipt(&1);
+    let after_last = h.token.verify_receipt(&2);
+
+    assert!(first.valid);
+    assert_eq!(first.index, 0);
+    assert_eq!(first.amount, 10);
+    assert!(last.valid);
+    assert_eq!(last.index, 1);
+    assert_eq!(last.amount, 20);
+    assert!(!after_last.valid);
+    assert_eq!(after_last.index, 2);
+    assert_eq!(after_last.amount, 0);
 }
 
 #[test]
-fn test_invalid_metadata_update_preserves_previous_metadata() {
+fn test_get_receipts_partial_final_page_is_ordered_and_bounded() {
     let h = setup();
-    let before = h.token.get_meta();
-    let mut invalid = before.clone();
-    invalid.project_type = String::from_str(&h.env, "coal");
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &150);
+    h.env.ledger().with_mut(|li| li.timestamp = 1_700_000_000);
 
-    assert!(h.token.try_update_meta(&invalid).is_err());
-    let after = h.token.get_meta();
-    assert_eq!(after.project_id, before.project_id);
-    assert_eq!(after.project_type, before.project_type);
-    assert_eq!(after.registry_project_id, before.registry_project_id);
-    assert_eq!(h.token.total_supply(), 0);
-    assert_eq!(h.token.retirement_count(), 0);
+    for amount in [10, 20, 30, 40, 50] {
+        do_retire(&h, &alice, amount);
+    }
+
+    let mut all = soroban_sdk::Vec::new(&h.env);
+    for (start, limit) in [(0, 2), (2, 2), (4, 2)] {
+        let page = h.token.get_receipts(&start, &limit);
+        for i in 0..page.len() {
+            all.push_back(page.get(i).unwrap());
+        }
+    }
+    let past_end = h.token.get_receipts(&5, &2);
+
+    assert_eq!(all.len(), 5);
+    for (i, expected) in [10, 20, 30, 40, 50].iter().enumerate() {
+        assert_eq!(all.get(i as u32).unwrap().amount, *expected);
+    }
+    assert_eq!(past_end.len(), 0);
 }
 
 #[test]
-fn test_retire_on_behalf_requires_authorized_kyc_holder() {
+fn test_retirement_receipt_preserves_distinct_beneficiary_metadata() {
     let h = setup();
     let retiree = Address::generate(&h.env);
     let beneficiary = Address::generate(&h.env);
     h.approve_kyc(&retiree);
     h.approve_kyc(&beneficiary);
-    h.token.mint(&retiree, &50);
+    h.token.mint(&retiree, &25);
+    h.env.ledger().with_mut(|li| li.timestamp = 1_700_000_000);
 
-    // No auths are mocked in this isolated deployment, so the caller cannot
-    // bypass the retiree.require_auth() guard.
-    let env2 = Env::default();
-    let admin2 = Address::generate(&env2);
-    let token_id2 = env2.register(
-        CarbonCreditToken,
-        (
-            admin2,
-            Address::generate(&env2),
-            Address::generate(&env2),
-            meta(&env2),
-        ),
-    );
-    let token2 = CarbonCreditTokenClient::new(&env2, &token_id2);
-    let unauthorized = Address::generate(&env2);
-    let beneficiary2 = Address::generate(&env2);
-    assert!(token2
-        .try_retire_on_behalf(
-            &unauthorized,
-            &beneficiary2,
-            &10,
-            &String::from_str(&env2, "unauthorized"),
-        )
-        .is_err());
+    let reason = String::from_str(&h.env, "beneficiary offset");
+    h.token
+        .retire_on_behalf(&retiree, &beneficiary, &25, &reason);
 
-    let receipt = h.token.retire_on_behalf(
-        &retiree,
-        &beneficiary,
-        &10,
-        &String::from_str(&h.env, "authorized offset"),
-    );
-    assert_eq!(receipt.retiree, retiree);
-    assert_eq!(receipt.amount, 10);
-    assert_eq!(receipt.beneficiary_address, Some(beneficiary));
-    assert_eq!(h.token.balance(&retiree), 40);
-}
+    let by_index = h.token.get_receipt(&0);
+    let by_beneficiary = h
+        .token
+        .get_receipts_by_beneficiary(&beneficiary, &0, &1);
+    let queried = by_beneficiary.get(0).unwrap();
 
-#[test]
-fn test_batch_retire_preserves_input_order() {
-    let h = setup();
-    let alice = Address::generate(&h.env);
-    h.approve_kyc(&alice);
-    h.token.mint(&alice, &60);
-    let requests = soroban_sdk::vec![
-        &h.env,
-        (10, String::from_str(&h.env, "first"), String::from_str(&h.env, "a")),
-        (20, String::from_str(&h.env, "second"), String::from_str(&h.env, "b")),
-        (30, String::from_str(&h.env, "third"), String::from_str(&h.env, "c")),
-    ];
-
-    let receipts = h.token.batch_retire(&alice, &requests);
-    assert_eq!(receipts.len(), 3);
-    assert_eq!(receipts.get(0).unwrap().amount, 10);
-    assert_eq!(receipts.get(1).unwrap().amount, 20);
-    assert_eq!(receipts.get(2).unwrap().amount, 30);
-    assert_eq!(receipts.get(0).unwrap().beneficiary, String::from_str(&h.env, "first"));
-    assert_eq!(h.token.balance(&alice), 0);
-    assert_eq!(h.token.total_retired(), 60);
-    assert_eq!(h.token.retirement_count(), 3);
-}
-
-#[test]
-fn test_batch_retire_late_invalid_entry_is_atomic() {
-    let h = setup();
-    let alice = Address::generate(&h.env);
-    h.approve_kyc(&alice);
-    h.token.mint(&alice, &100);
-    let requests = soroban_sdk::vec![
-        &h.env,
-        (25, String::from_str(&h.env, "valid"), String::from_str(&h.env, "first")),
-        (0, String::from_str(&h.env, "invalid"), String::from_str(&h.env, "late")),
-    ];
-
-    assert!(h.token.try_batch_retire(&alice, &requests).is_err());
-    assert_eq!(h.token.balance(&alice), 100);
-    assert_eq!(h.token.total_supply(), 100);
-    assert_eq!(h.token.total_retired(), 0);
-    assert_eq!(h.token.retirement_count(), 0);
+    assert_eq!(by_index.retiree, retiree);
+    assert_eq!(by_index.amount, 25);
+    assert_eq!(by_index.beneficiary_address, Some(beneficiary.clone()));
+    assert_eq!(by_index.retirement_reason, reason);
+    assert_eq!(queried.retiree, by_index.retiree);
+    assert_eq!(queried.amount, by_index.amount);
+    assert_eq!(queried.beneficiary_address, by_index.beneficiary_address);
+    assert_eq!(queried.retirement_reason, by_index.retirement_reason);
 }

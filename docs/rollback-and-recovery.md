@@ -41,6 +41,9 @@ Deployment went wrong
         ├── Wrong network / environment?
         │         └─► Section 4 — Environment Rollback
         │
+        ├── Local deploy-manifest.json lost, contracts still live?
+        │         └─► Section 6 — Lost Deployment Manifest Recovery
+        │
         └── Not sure / live incident in progress?
                   └─► Step 1: Pause all transfers (Section 5)
                       Step 2: Diagnose
@@ -395,6 +398,62 @@ For full incident response procedures — including admin key rotation and compr
 
 ---
 
+## 6. Lost Deployment Manifest Recovery
+
+Use this when `deploy-manifest.json` (and its `.partial.json` checkpoint) is missing or corrupt locally, but the contracts it described are still deployed. The manifest is local evidence only — losing it does not affect on-chain state, so **do not redeploy** to "fix" a missing file.
+
+### Step 1 — Look for an existing copy first
+
+A manifest copy is always preferable to reconstruction. Check, in order:
+
+1. Version control history and other team members' working copies.
+2. CI artifacts or release attachments from the deploy run.
+3. The secure out-of-repo record of contract IDs required by [Prerequisites](#prerequisites).
+4. The deployed frontend environment (`VITE_*_ID` values), which reflects the IDs the UI is actually using.
+
+If a full manifest is recovered, validate and verify it, then stop:
+
+```bash
+python3 scripts/deployment_cli.py validate-manifest --manifest deploy-manifest.json
+bash scripts/verify-deployment.sh "$ADMIN_KEY"
+```
+
+### Step 2 — Decide what can be re-verified
+
+If only contract IDs survive, the following can be confirmed against the chain with existing tooling. Each ID must come from a trusted record above — never from a guess or a search for similar-looking contracts.
+
+| Value | How to re-verify | Recoverable? |
+|---|---|---|
+| Contract exists on the intended network | `stellar contract fetch --network "$NETWORK" --id <id>` (see [Section 4](#4-environment-rollback)) | Yes |
+| Deployed WASM hash | `stellar contract info hash --network "$NETWORK" --id <id>`, compared with the SHA-256 of a locally rebuilt artifact from the tagged release commit | Yes, if the release commit is known |
+| Contract metadata | `stellar contract info meta --network "$NETWORK" --id <id>` | Yes |
+| Compliance rules, blocklist, KYC subjects, asset metadata | The read calls in [Section 3, Step 2](#step-2--snapshot-all-state) | Yes |
+| Dependency wiring (KYC registry ↔ compliance engine ↔ tokens) | Contract read calls that return configured dependency IDs, compared with your trusted ID record | Yes, where a read call exposes it |
+
+### Step 3 — Accept what cannot be reconstructed
+
+The following manifest fields are not stored on-chain and **cannot be regenerated automatically**. Mark them unknown rather than filling in plausible values:
+
+- the original `deployment_id`, generation number, and operation timestamps;
+- `previous_manifest_sha256` and the rest of the registry lineage;
+- the config path, profile, and config hash used for the run;
+- the exact local artifact paths and build environment that produced the WASM;
+- which identity alias performed each step (only the public source address may be inferable); and
+- the mapping from a contract ID to its contract name, if no trusted record of that mapping exists.
+
+A hand-written manifest that invents these values will pass structural validation but misrepresents the deployment. Do not commit one as canonical.
+
+### Step 4 — Stop and escalate when
+
+- any contract ID cannot be traced to a trusted record;
+- a deployed WASM hash does not match an artifact rebuilt from a known release commit;
+- dependency IDs read from the chain disagree with your ID record; or
+- the frontend is pointing at IDs nobody can account for.
+
+In any of these cases, pause transfers ([Section 5](#5-emergency-stop-during-any-rollback)) if funds could be affected, and escalate to the admin key holders. Treat unexplained IDs as a potential incident per the [Incident Response Runbook](incident-response.md). If a clean, fully verified manifest is required going forward, the safe path is a fresh deployment via [Section 3](#3-contract-code-rollback), which produces a new canonical manifest with complete lineage.
+
+---
+
 ## Conditions for Using This Guide
 
 | Situation | Recommended section |
@@ -404,6 +463,7 @@ For full incident response procedures — including admin key rotation and compr
 | Contract code bug found post-deploy | [Section 3](#3-contract-code-rollback) |
 | Deployed to wrong network | [Section 4](#4-environment-rollback) |
 | Transfers must stop immediately | [Section 5](#5-emergency-stop-during-any-rollback) |
+| Local deployment manifest lost, contracts still deployed | [Section 6](#6-lost-deployment-manifest-recovery) |
 | Admin key compromised | [Incident Response Runbook — Section 2](incident-response.md) |
 | KYC verifier compromised | [Incident Response Runbook — Section 3](incident-response.md) |
 
