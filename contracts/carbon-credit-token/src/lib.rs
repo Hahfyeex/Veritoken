@@ -103,6 +103,56 @@ const MAX_PAGE_SIZE: u32 = 100;
 /// no off-by-one risk.
 const MAX_FIELD_BYTES: u32 = 128;
 
+/// Append a Soroban string as a JSON string fragment, escaping characters that
+/// have syntactic meaning in JSON. Metadata is capped at 128 bytes before it is
+/// stored, so the small temporary buffer is sufficient for every field.
+fn write_json_escaped(out: &mut [u8], pos: &mut usize, value: &String) {
+    let len = value.len() as usize;
+    let mut raw = [0u8; MAX_FIELD_BYTES as usize];
+    value.copy_into_slice(&mut raw[..len]);
+    for byte in &raw[..len] {
+        match *byte {
+            b'"' | b'\\' => {
+                out[*pos] = b'\\';
+                *pos += 1;
+                out[*pos] = *byte;
+                *pos += 1;
+            }
+            b'\n' => {
+                out[*pos..*pos + 2].copy_from_slice(b"\\n");
+                *pos += 2;
+            }
+            b'\r' => {
+                out[*pos..*pos + 2].copy_from_slice(b"\\r");
+                *pos += 2;
+            }
+            b'\t' => {
+                out[*pos..*pos + 2].copy_from_slice(b"\\t");
+                *pos += 2;
+            }
+            b'\u{08}' => {
+                out[*pos..*pos + 2].copy_from_slice(b"\\b");
+                *pos += 2;
+            }
+            b'\u{0c}' => {
+                out[*pos..*pos + 2].copy_from_slice(b"\\f");
+                *pos += 2;
+            }
+            byte if byte < 0x20 => {
+                const HEX: &[u8; 16] = b"0123456789abcdef";
+                out[*pos..*pos + 6].copy_from_slice(b"\\u00");
+                out[*pos + 4] = HEX[(byte >> 4) as usize];
+                out[*pos + 5] = HEX[(byte & 0x0f) as usize];
+                *pos += 6;
+            }
+            byte => {
+                out[*pos] = byte;
+                *pos += 1;
+            }
+        }
+    }
+}
+
 /// Returned by `verify_receipt`. Contains key fields plus a validity flag and serial number.
 #[contracttype]
 #[derive(Clone)]
@@ -1100,9 +1150,8 @@ impl CarbonCreditToken {
     /// retire time via `validate_metadata_field_length`, so this function will
     /// never encounter an oversized field at certificate generation time.
     ///
-    /// Uses a single 1024-byte stack buffer.  The maximum JSON output given the
-    /// 128-byte field cap is approximately 950 bytes, so this buffer is always
-    /// sufficient and the `copy_into_slice` calls below are safe.
+    /// Uses a single fixed stack buffer. Fields are escaped before being copied,
+    /// so the buffer allows for the worst-case expansion of control characters.
     pub fn to_certificate_json(env: Env, index: u32) -> String {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         let receipt: RetirementReceipt = env
@@ -1118,7 +1167,7 @@ impl CarbonCreditToken {
 
         // Single stack buffer — no heap allocation required.
         // Max size: ~950 bytes with all fields at their 128-byte cap.
-        let mut out = [0u8; 1024];
+        let mut out = [0u8; 8192];
         let mut pos = 0usize;
 
         // Helper closures that write into `out` at `pos`.
@@ -1134,6 +1183,11 @@ impl CarbonCreditToken {
                 let len = $s.len() as usize;
                 $s.copy_into_slice(&mut out[pos..pos + len]);
                 pos += len;
+            }};
+        }
+        macro_rules! push_json_str {
+            ($s:expr) => {{
+                write_json_escaped(&mut out, &mut pos, &$s);
             }};
         }
         macro_rules! push_u32 {
@@ -1156,9 +1210,9 @@ impl CarbonCreditToken {
         }
 
         push_literal!(b"{\"project_id\":\"");
-        push_sdk_str!(meta.project_id);
+        push_json_str!(meta.project_id);
         push_literal!(b"\",\"standard\":\"");
-        push_sdk_str!(meta.standard);
+        push_json_str!(meta.standard);
         push_literal!(b"\",\"vintage_year\":");
         push_u32!(meta.vintage_year);
         push_literal!(b",\"retiree\":\"");
@@ -1169,13 +1223,13 @@ impl CarbonCreditToken {
         push_literal!(b",\"timestamp\":");
         push_u64!(receipt.timestamp);
         push_literal!(b",\"beneficiary\":\"");
-        push_sdk_str!(receipt.beneficiary);
+        push_json_str!(receipt.beneficiary);
         push_literal!(b"\",\"retirement_reason\":\"");
-        push_sdk_str!(receipt.retirement_reason);
+        push_json_str!(receipt.retirement_reason);
         push_literal!(b"\",\"registry_url\":\"");
-        push_sdk_str!(meta.registry_url);
+        push_json_str!(meta.registry_url);
         push_literal!(b"\",\"registry_project_id\":\"");
-        push_sdk_str!(meta.registry_project_id);
+        push_json_str!(meta.registry_project_id);
         push_literal!(b"\"}");
 
         String::from_bytes(&env, &out[..pos])

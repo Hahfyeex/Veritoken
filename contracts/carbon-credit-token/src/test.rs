@@ -351,6 +351,71 @@ fn test_to_certificate_json() {
     assert!(s.contains("\"timestamp\":"));
 }
 
+#[test]
+fn test_to_certificate_json_escapes_special_characters() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &10);
+    h.token.retire(
+        &alice,
+        &10,
+        &String::from_str(&h.env, "Beneficiary: \"Acme\" \\ North\nLine"),
+        &String::from_str(&h.env, "Reason\twith\rcontrols"),
+    );
+
+    let json = h.token.to_certificate_json(&0);
+    let len = json.len() as usize;
+    let mut buf = [0u8; 1024];
+    json.copy_into_slice(&mut buf[..len]);
+    let s = core::str::from_utf8(&buf[..len]).expect("valid utf8");
+
+    assert!(s.contains("\\\"Acme\\\""));
+    assert!(s.contains("\\\\ North\\nLine"));
+    assert!(s.contains("Reason\\twith\\rcontrols"));
+}
+
+#[test]
+fn test_retire_exact_balance_updates_accounting_and_receipts() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &7);
+
+    h.token.retire(
+        &alice,
+        &7,
+        &String::from_str(&h.env, "Acme"),
+        &String::from_str(&h.env, "net zero"),
+    );
+
+    assert_eq!(h.token.balance(&alice), 0);
+    assert_eq!(h.token.total_retired(), 7);
+    assert_eq!(h.token.retirement_count(), 1);
+    assert_eq!(h.token.get_receipts(&0, &10).len(), 1);
+}
+
+#[test]
+fn test_retire_over_balance_fails_without_receipt() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &7);
+
+    let result = h.token.try_retire(
+        &alice,
+        &8,
+        &String::from_str(&h.env, "Acme"),
+        &String::from_str(&h.env, "net zero"),
+    );
+
+    assert!(result.is_err());
+    assert_eq!(h.token.balance(&alice), 7);
+    assert_eq!(h.token.total_retired(), 0);
+    assert_eq!(h.token.retirement_count(), 0);
+    assert_eq!(h.token.get_receipts(&0, &10).len(), 0);
+}
+
 // ── project_type validation tests (#255) ─────────────────────────────────────
 
 #[test]

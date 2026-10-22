@@ -175,6 +175,16 @@ describe("lookupError", () => {
 });
 
 describe("parseContractError", () => {
+  it("preserves unknown contract error codes in a stable fallback", () => {
+    const parsed = parseContractError("carbon", "Error(Contract, #9876)");
+
+    expect(parsed).toEqual({
+      code: 9876,
+      name: "UnknownContractError",
+      message: "Unknown error 9876 from contract carbon",
+    });
+  });
+
   it("parses an AlreadyInitialized Soroban error", () => {
     const parsed = parseContractError(
       "rwa",
