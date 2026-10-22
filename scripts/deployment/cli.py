@@ -3,9 +3,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Mapping, Sequence
 
 from .models import (
     MANIFEST_SCHEMA_VERSION,
@@ -306,30 +307,68 @@ def _plan(args: argparse.Namespace, repo_root: Path) -> int:
 def _validate_manifest(args: argparse.Namespace, repo_root: Path) -> int:
     manifest_path = _resolve(args.manifest, repo_root)
     manifest = load_json_object(manifest_path)
-    if manifest.get("schema_version") != MANIFEST_SCHEMA_VERSION:
-        raise DeploymentError(
-            f"manifest schema_version must be {MANIFEST_SCHEMA_VERSION}"
-        )
-    network = manifest.get("network")
-    if not isinstance(network, dict):
-        raise DeploymentError("manifest network must be an object")
-    NetworkConfig.from_dict(network)
-    contracts = manifest.get("contracts")
-    if not isinstance(contracts, dict) or not contracts:
-        raise DeploymentError("manifest contracts must be a non-empty object")
-    for name, record in contracts.items():
-        if not isinstance(name, str) or not name:
-            raise DeploymentError("manifest contract names must be non-empty strings")
-        if not isinstance(record, dict):
-            raise DeploymentError(f"manifest contract {name} must be an object")
-        for field in ("contract_id", "wasm_hash", "artifact"):
-            if field not in record:
-                raise DeploymentError(f"manifest contract {name} is missing {field}")
+    contracts = validate_manifest_structure(manifest)
     print(
         f"Manifest is structurally valid: {manifest_path} "
         f"({len(contracts)} contracts)."
     )
     return 0
+
+
+def validate_manifest_structure(manifest: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Validate a manifest offline and return its contracts mapping.
+
+    Errors name the JSON path of the offending field (for example
+    ``$.contracts.kyc_registry.contract_id``) and never echo field values.
+    """
+    if manifest.get("schema_version") != MANIFEST_SCHEMA_VERSION:
+        raise DeploymentError(
+            f"$.schema_version: must be {MANIFEST_SCHEMA_VERSION}"
+        )
+    network = manifest.get("network")
+    if not isinstance(network, dict):
+        raise DeploymentError("$.network: must be an object")
+    _require_manifest_string(network, "name", "$.network")
+    for key in ("rpc_url", "passphrase"):
+        if network.get(key) is not None:
+            _require_manifest_string(network, key, "$.network")
+    try:
+        NetworkConfig.from_dict(network)
+    except DeploymentError as exc:
+        raise DeploymentError(f"$.network: {exc}") from exc
+    contracts = manifest.get("contracts")
+    if not isinstance(contracts, dict) or not contracts:
+        raise DeploymentError("$.contracts: must be a non-empty object")
+    for name, record in contracts.items():
+        if not isinstance(name, str) or not name:
+            raise DeploymentError(
+                "$.contracts: contract names must be non-empty strings"
+            )
+        record_path = _json_path("$.contracts", name)
+        if not isinstance(record, dict):
+            raise DeploymentError(f"{record_path}: must be an object")
+        for field in ("contract_id", "wasm_hash", "artifact"):
+            if field not in record:
+                raise DeploymentError(
+                    f"{_json_path(record_path, field)}: required field is missing"
+                )
+    return contracts
+
+
+def _require_manifest_string(
+    value: Mapping[str, Any], key: str, parent: str
+) -> None:
+    candidate = value.get(key)
+    if not isinstance(candidate, str) or not candidate:
+        raise DeploymentError(
+            f"{_json_path(parent, key)}: must be a non-empty string"
+        )
+
+
+def _json_path(parent: str, key: str) -> str:
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+        return f"{parent}.{key}"
+    return f"{parent}[{json.dumps(key)}]"
 
 
 def _simulate_upgrade(args: argparse.Namespace, repo_root: Path) -> int:
