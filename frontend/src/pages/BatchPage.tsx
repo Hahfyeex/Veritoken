@@ -1,17 +1,11 @@
 import { useState } from "react";
-import { Keypair } from "@stellar/stellar-sdk";
 import { useWallet } from "../lib/wallet";
+import { contracts } from "../lib/contracts";
 import { useAddressValidation } from "../lib/useAddressValidation";
 import { PageHeader, Card, Field, Select, Icon } from "../components/ui";
 import WalletGuard from "../components/WalletGuard";
 import ConfirmDialog from "../components/ConfirmDialog";
 import { useToast } from "../lib/toast";
-import {
-  useSubmitWithFeeBump,
-  feeBumpStatusLabel,
-  isFeeBumpInFlight,
-} from "../lib/useSubmitWithFeeBump";
-import { DEFAULT_FEE_BUMP_CONFIG } from "../lib/feeBump";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -49,6 +43,7 @@ export default function BatchPage() {
 
   const [ops, setOps] = useState<BatchOp[]>([]);
   const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const [form, setForm] = useState({
     type: "transfer" as OpType,
@@ -61,28 +56,6 @@ export default function BatchPage() {
   const [confirm, setConfirm] = useState<{
     title: string; description: string; onConfirm: () => void;
   } | null>(null);
-
-  // ── Fee-bump hook ──────────────────────────────────────────────────────────
-  // feeBumpSource is a per-session ephemeral keypair that pays the bump fee.
-  // In a real deployment this would come from a funded operator account stored
-  // in the wallet or environment config.  For now we derive it from the
-  // connected wallet address so each address gets a deterministic key in dev.
-  const [feeBumpKeypair] = useState(() => Keypair.random());
-
-  const feeBumpConfig = {
-    ...DEFAULT_FEE_BUMP_CONFIG,
-    feeBumpSource: feeBumpKeypair,
-  };
-
-  const {
-    submit: feeBumpSubmit,
-    status: feeBumpStatus,
-    retries: feeBumpRetries,
-    error: feeBumpError,
-    reset: feeBumpReset,
-  } = useSubmitWithFeeBump(feeBumpConfig);
-
-  const isFeeBumpActive = isFeeBumpInFlight(feeBumpStatus);
 
   // ── Form helpers ───────────────────────────────────────────────────────────
 
@@ -125,28 +98,35 @@ export default function BatchPage() {
       description: `You are about to execute ${ops.length} operation${ops.length > 1 ? "s" : ""} in sequence. Each will require a separate wallet signature.`,
       onConfirm: async () => {
         setConfirm(null);
+        setError(null);
+
+        // Only token transfers map onto a supported on-chain batch method
+        // (rwa-token `batch_transfer`); reject anything else up front rather
+        // than submitting a partial batch.
+        const unsupported = ops.filter((op) => op.type !== "transfer");
+        if (unsupported.length > 0) {
+          const msg = `Only token transfers can be executed as a batch. Remove ${unsupported.length} unsupported operation${unsupported.length > 1 ? "s" : ""} and try again.`;
+          setError(msg);
+          addToast(msg, "error");
+          return;
+        }
+        if (!address) {
+          setError("Wallet not connected");
+          return;
+        }
+
         setSubmitting(true);
-        feeBumpReset();
         try {
-          // Iterate over each operation and submit via the fee-bump pipeline.
-          // Each op builds its XDR, then delegates signing + submission to
-          // feeBumpSubmit, which wraps every send in a fee-bump envelope and
-          // retries with exponential back-off on transient failures.
-          for (const op of ops) {
-            // TODO: replace the placeholder XDR with real contract call XDR
-            // produced by the appropriate contract client for each op.type.
-            const placeholderXdr = `placeholder-xdr:${op.type}:${op.target}`;
-
-            await feeBumpSubmit(placeholderXdr, async (xdr) => {
-              if (!signTx) throw new Error("Wallet not connected");
-              return signTx(xdr);
-            });
-          }
-
-          addToast(`${ops.length} operations executed successfully.`, "success");
+          await contracts.rwa.batchTransfer(
+            address,
+            ops.map((op) => ({ to: op.target, amount: BigInt(op.amount ?? "0") })),
+            signTx,
+          );
+          addToast(`${ops.length} transfers executed successfully.`, "success");
           setOps([]);
         } catch (err) {
           const msg = err instanceof Error ? err.message : "Batch execution failed";
+          setError(msg);
           addToast(msg, "error");
         } finally {
           setSubmitting(false);
@@ -160,16 +140,12 @@ export default function BatchPage() {
 
   // ── Derived UI state ───────────────────────────────────────────────────────
 
-  const isBusy = submitting || isFeeBumpActive;
+  const isBusy = submitting;
 
   /** Label shown on the execute button during submission. */
-  const executeLabel = (() => {
-    if (!isBusy) return `Execute ${ops.length} Operation${ops.length > 1 ? "s" : ""}`;
-    if (feeBumpStatus.kind === "retrying") {
-      return `Retrying (${feeBumpRetries})…`;
-    }
-    return feeBumpStatusLabel(feeBumpStatus);
-  })();
+  const executeLabel = isBusy
+    ? "Submitting…"
+    : `Execute ${ops.length} Operation${ops.length > 1 ? "s" : ""}`;
 
   return (
     <div className="form-narrow">
@@ -177,7 +153,7 @@ export default function BatchPage() {
         eyebrow="Operations"
         icon={<Icon.bolt size={22} />}
         title="Batch Operations"
-        description="Group multiple contract operations into a single workflow. Each operation in the batch is submitted sequentially through the fee-bump pipeline, which retries with a higher fee on network congestion."
+        description="Group multiple contract operations into a single workflow. Token transfers in the batch are submitted as a single atomic batch_transfer call: either every transfer succeeds or none do."
       />
 
       {/* Add operation form */}
@@ -283,7 +259,7 @@ export default function BatchPage() {
             </tbody>
           </table>
 
-          {/* Fee-bump status banner — visible while a submission is in-flight */}
+          {/* Submission status banner — visible while the batch is in-flight */}
           {isBusy && (
             <div
               role="status"
@@ -296,38 +272,14 @@ export default function BatchPage() {
                 padding: "0.6rem 0.9rem",
                 marginBottom: "0.75rem",
                 fontSize: "0.82rem",
-                display: "flex",
-                alignItems: "center",
-                gap: "0.5rem",
               }}
             >
-              <span
-                aria-hidden="true"
-                style={{
-                  display: "inline-block",
-                  width: "0.55rem",
-                  height: "0.55rem",
-                  borderRadius: "50%",
-                  background:
-                    feeBumpStatus.kind === "retrying" ? "#f59e0b" : "#3b82f6",
-                  animation: "pulse 1.4s infinite",
-                }}
-              />
-              <span>
-                {feeBumpStatus.kind === "retrying"
-                  ? `retrying(${feeBumpStatus.attempt}) — fee escalated`
-                  : feeBumpStatusLabel(feeBumpStatus)}
-              </span>
-              {feeBumpRetries > 0 && feeBumpStatus.kind !== "retrying" && (
-                <span style={{ color: "var(--text-muted)" }}>
-                  ({feeBumpRetries} {feeBumpRetries === 1 ? "retry" : "retries"})
-                </span>
-              )}
+              Waiting for wallet signature and network confirmation…
             </div>
           )}
 
           {/* Error banner — visible after a failed submission */}
-          {feeBumpStatus.kind === "failed" && feeBumpError && (
+          {error && !isBusy && (
             <div
               role="alert"
               style={{
@@ -340,7 +292,7 @@ export default function BatchPage() {
                 color: "#fca5a5",
               }}
             >
-              {feeBumpError.message}
+              {error}
             </div>
           )}
 
@@ -356,7 +308,7 @@ export default function BatchPage() {
                 {executeLabel}
               </button>
               <button
-                onClick={() => { setOps([]); feeBumpReset(); }}
+                onClick={() => { setOps([]); setError(null); }}
                 className="btn-ghost btn-danger"
                 style={{ padding: "0.55rem 1rem" }}
                 disabled={isBusy}

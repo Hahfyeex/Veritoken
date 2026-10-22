@@ -42,6 +42,34 @@ npm install
 npm run dev
 ```
 
+### Test commands by area
+
+Run the narrowest suite that covers your change. Cargo commands run from the
+repository root; npm commands run from the directory in the **Working dir**
+column. Contract crates expose Soroban test helpers behind the `testutils`
+feature, so pass `--features testutils` where shown (the smoke crate has no
+such feature and must be run without it). None of these commands need
+credentials or a funded account.
+
+| Area | Kind | Working dir | Command |
+| --- | --- | --- | --- |
+| Single contract (e.g. `rwa-token`, `kyc-registry`, `compliance-engine`, `invoice-token`, `property-token`, `carbon-credit-token`, `token-helpers`) | Unit | repo root | `cargo test -p rwa-token --features testutils` |
+| All contracts and Rust test crates | Unit + integration | repo root | `cargo test --features testutils` |
+| Cross-contract integration suite | Integration | repo root | `cargo test -p integration-tests --features testutils` |
+| Smoke tests | Integration | repo root | `cargo test -p smoke-tests` |
+| Property-based fuzz tests | Integration | repo root | `cargo test -p fuzz-tests --features testutils` |
+| Dividend regression tests | Integration | repo root | `cargo test -p dividend-regression-tests --features testutils` |
+| SDK | Unit | `sdk/` | `npm test` |
+| Frontend (all) | Unit | `frontend/` | `npm test` |
+| Frontend (one file) | Unit | `frontend/` | `npx vitest run src/lib/__tests__/drafts.test.ts` |
+| Integration fixtures (no network) | Unit | `tests/integration/` | `npm run test:unit` |
+| Lifecycle against local quickstart | Integration | `tests/integration/` | `npm run test:lifecycle` (requires `cargo build --release --target wasm32-unknown-unknown` and `docker compose up -d` first) |
+| Browser end-to-end | Integration | `tests/e2e/` | `npm test` (requires Docker and built WASMs; see `tests/e2e/README.md`) |
+
+Install dependencies once with `npm install` from the repository root (covers
+the `frontend` and `sdk` workspaces); `tests/integration` and `tests/e2e` are
+separate installs inside their own directories.
+
 ---
 
 ## Making Changes
