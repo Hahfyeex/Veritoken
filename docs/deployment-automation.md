@@ -368,6 +368,85 @@ The verifier uses `stellar contract info hash` for deployed code identity and
 `stellar contract info meta` for declared contract metadata. It does not infer
 success from a responsive contract ID alone.
 
+### Post-deployment verification example
+
+Verification is a separate, read-only step from deployment: it does not upload
+WASM, deploy contracts, or rewrite `deploy-manifest.json` or `frontend/.env`.
+Run it against a fresh deployment before handing contract IDs to anyone else.
+
+The wrapper takes an optional identity as its only positional argument. The
+manifest and report paths come from `DEPLOY_MANIFEST` and
+`DEPLOY_VERIFICATION_REPORT`:
+
+```bash
+DEPLOY_MANIFEST=deploy-manifest.json \
+DEPLOY_VERIFICATION_REPORT=deployment-verification-report.json \
+  bash scripts/verify-deployment.sh veritoken-dev
+```
+
+The equivalent direct invocation:
+
+```bash
+python3 scripts/deployment_cli.py verify \
+  --manifest deploy-manifest.json \
+  --report deployment-verification-report.json \
+  --identity veritoken-dev
+```
+
+`verify` has no `--network` flag. The network (name, and RPC URL/passphrase
+for custom networks) is read from the manifest, so point `--manifest` at the
+manifest produced for the network you intend to check. `--identity` only
+overrides the source-account identity recorded in the manifest and is used for
+read-only calls; it never needs a secret key in the command line.
+
+The command writes the report, then prints a one-line summary and the report
+path. Illustrative output from a passing run:
+
+```text
+Deployment verification passed: 42 passed, 0 failed.
+Verification report: /path/to/repo/deployment-verification-report.json
+Deployment verified.
+```
+
+The final `Deployment verified.` line is printed by the shell wrapper only. On
+any failed check the command exits `1` and prints
+`Deployment verification failed: <n> passed, <m> failed.` instead.
+
+An abridged, illustrative report is shown below. Contract IDs, hashes, and
+counts are placeholders, not values from a real deployment:
+
+```json
+{
+  "schema_version": 1,
+  "status": "passed",
+  "generated_at": "2025-01-01T00:00:00Z",
+  "deployment_id": "<deployment-id>",
+  "manifest_sha256": "<sha256-of-manifest>",
+  "network": { "name": "testnet" },
+  "checks": [
+    {
+      "contract": "kyc_registry",
+      "check": "deployed_wasm_hash",
+      "status": "passed",
+      "expected": "<local-wasm-sha256>",
+      "actual": "<local-wasm-sha256>"
+    },
+    {
+      "contract": "compliance_engine",
+      "check": "dependency_registry",
+      "status": "passed",
+      "expected": "<kyc-registry-contract-id>",
+      "actual": "<kyc-registry-contract-id>"
+    }
+  ],
+  "summary": { "total": 42, "passed": 42, "failed": 0 }
+}
+```
+
+Hand over contract IDs only when `status` is `passed` and `summary.failed` is
+`0`. A failed check carries a `detail` field where available; fix the cause and
+re-run `verify` rather than redeploying blindly.
+
 ## Environment variables
 
 | Variable | Purpose |

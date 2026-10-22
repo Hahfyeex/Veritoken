@@ -129,8 +129,15 @@ export function NotificationCenter() {
     return () => document.removeEventListener("keydown", onKey);
   }, []);
 
+  // Newest unread notification, announced via a polite live region so that
+  // screen-reader users hear it arrive without opening the dropdown.
+  const latestUnread = notifications.find((n) => !n.read);
+
   return (
     <div ref={ref} style={{ position: "relative" }}>
+      <div role="status" aria-live="polite" aria-atomic="true" style={srOnly}>
+        {latestUnread ? `${latestUnread.title}: ${latestUnread.message}` : ""}
+      </div>
       {/* Bell button */}
       <button
         onClick={() => setOpen((v) => !v)}
@@ -274,4 +281,16 @@ const ghostBtn: React.CSSProperties = {
   fontSize: "0.7rem",
   color: "var(--text-muted)",
   padding: "0.1rem 0.3rem",
+};
+
+const srOnly: React.CSSProperties = {
+  position: "absolute",
+  width: 1,
+  height: 1,
+  padding: 0,
+  margin: -1,
+  overflow: "hidden",
+  clip: "rect(0, 0, 0, 0)",
+  whiteSpace: "nowrap",
+  border: 0,
 };
