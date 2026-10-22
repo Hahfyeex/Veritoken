@@ -433,12 +433,14 @@ export default function InvoicePage() {
             <form onSubmit={handleIssue}>
               <Field
                 label="Recipient Address"
+                name="issueTo"
                 value={issueTo}
                 onChange={(e) => setIssueTo(e.target.value)}
                 placeholder={address ?? "G…"}
               />
               <Field
                 label="Amount (stroops)"
+                name="issueAmount"
                 type="number"
                 value={issueAmount}
                 onChange={(e) => setIssueAmount(e.target.value)}
@@ -476,6 +478,7 @@ export default function InvoicePage() {
             <form onSubmit={handleRedeem}>
               <Field
                 label="Amount to Redeem (stroops)"
+                name="redeemAmount"
                 type="number"
                 value={redeemAmount}
                 onChange={(e) => setRedeemAmount(e.target.value)}

@@ -779,6 +779,94 @@ get_dividend_summary(env, holder: Address) → DividendSummary
 
 ---
 
+#### Dividend rounding and dust policy
+
+**Overview**
+
+All dividend arithmetic uses integer (fixed-point) math. Every stroop deposited is either claimable by a holder or captured in the on-chain dust reserve. No stroop is ever silently discarded.
+
+**SCALE_FACTOR**
+
+The contract defines an internal constant:
+
+```
+SCALE_FACTOR = 10_000_000   (10^7)
+```
+
+Before performing the per-share division, the deposited amount is multiplied by `SCALE_FACTOR`. This shifts the precision window seven decimal places to the right, so the truncation error per holder per distribution is at most `1 / SCALE_FACTOR` stroops — effectively zero for any realistic share count.
+
+**Calculation at deposit time**
+
+When `deposit_dividend(amount, distribution_type)` is called:
+
+```
+per_share_scaled     = (amount × SCALE_FACTOR) / total_shares   // integer division
+allocated_amount     = per_share_scaled × total_shares / SCALE_FACTOR
+dust                 = amount − allocated_amount
+```
+
+`allocated_amount` is the total that holders can collectively claim. `dust` is the truncation remainder and is added to the on-chain `DustReserve`. The invariant `allocated_amount + dust == amount` holds for every distribution.
+
+**Calculation at claim time**
+
+When a holder claims dividends, the contract computes:
+
+```
+entitlement = balance × (current_cumulative_dps − holder_index_dps) / SCALE_FACTOR
+```
+
+where `current_cumulative_dps` and `holder_index_dps` are the scaled cumulative dividend-per-share accumulators read from the latest `DistributionCheckpoint`. Typed claims (`claim_rent_yield`, `claim_capital_return`) use the corresponding `rent_cumulative_per_share` or `capital_cumulative_per_share` fields from the same checkpoint.
+
+**Illustrative example**
+
+Assume `total_shares = 7` and a single deposit of `1 000 000` stroops:
+
+```
+per_share_scaled = (1_000_000 × 10_000_000) / 7
+               = 10_000_000_000_000 / 7
+               = 1_428_571_428          (integer truncation)
+
+allocated_amount = 1_428_571_428 × 7 / 10_000_000
+               = 9_999_999_996 / 10_000_000
+               = 999_999
+
+dust             = 1_000_000 − 999_999 = 1
+```
+
+The single holder (7 shares, all outstanding) receives 999 999 stroops; 1 stroop goes to the dust reserve.
+
+**Dust reserve**
+
+The dust reserve accumulates the per-distribution truncation remainders. It is never claimable by ordinary holders. The admin can withdraw it at any time using:
+
+```
+collect_dust_reserve(env, to: Address) → i128
+```
+
+This transfers the entire accumulated dust to `to`, resets the on-chain `DustReserve` to zero, and emits a `dust_clm` event. Calling it when the reserve is zero returns `0` without error.
+
+**Relevant read methods**
+
+| Method | Returns | Notes |
+|---|---|---|
+| `dust_reserve(env) → i128` | Current accumulated dust in stroops | Grows by at most 1 per distribution per `total_shares` |
+| `get_distribution(env, id: u32) → Option<DistributionCheckpoint>` | Full checkpoint for a specific distribution index | Contains `allocated_amount`, `per_share_scaled`, and all cumulative typed DPS fields |
+| `get_distributions(env, start: u32, limit: u32) → Vec<DistributionCheckpoint>` | Paginated checkpoint history | Limit capped at 50 |
+| `unclaimed_balance(env, holder: Address) → UnclaimedBalance` | Typed breakdown of unclaimed stroops | Fields: `total`, `rent`, `capital`, `other`, `distribution_count` |
+| `dividend_accounting_version(env) → u32` | Always `1` on v2+ contracts | Legacy migration indicator |
+
+**Key invariant**
+
+At any point in time, summing the pending dividends of all active holders plus the dust reserve must equal the dividend pool:
+
+```
+Σ pending_dividend(holder_i) + dust_reserve() == dividend_pool()
+```
+
+This invariant is verified by the contract's internal deterministic test suite and can be spot-checked off-chain against on-chain state at any ledger.
+
+---
+
 #### Holder queries
 ```
 holder_count(env) → u32

@@ -75,3 +75,38 @@ describe("discoverContracts", () => {
     expect(kyc).toMatchObject({ contractId: null, configured: false });
   });
 });
+
+describe("discoverContracts — absent optional field (#981)", () => {
+  it("defaults an omitted network to \"unknown\" without changing the contract entries", () => {
+    const withNetwork = discoverContracts({ kycRegistry: KYC_ID }, "testnet", "2026-01-01T00:00:00.000Z");
+    const withoutNetwork = discoverContracts({ kycRegistry: KYC_ID }, undefined, "2026-01-01T00:00:00.000Z");
+    expect(withoutNetwork.network).toBe("unknown");
+    expect(withoutNetwork.generatedAt).toBe("2026-01-01T00:00:00.000Z");
+    expect(withoutNetwork.contracts).toEqual(withNetwork.contracts);
+  });
+
+  it("still throws when the required contractIds map is missing", () => {
+    // @ts-expect-error — contractIds is required; this asserts the runtime outcome.
+    expect(() => discoverContracts(undefined, "testnet", "2026-01-01T00:00:00.000Z")).toThrow(TypeError);
+  });
+});
+
+describe("discoverContracts — unknown future field (#982)", () => {
+  // A key the SDK doesn't know yet, as a newer host app might pass.
+  const withFutureKey = { kycRegistry: KYC_ID, futureToken: RWA_ID } as Partial<Record<ClientKey, string>>;
+
+  it("ignores an unrecognised key and leaves known entries unchanged", () => {
+    const baseline = discoverContracts({ kycRegistry: KYC_ID }, "testnet", "2026-01-01T00:00:00.000Z");
+    const report = discoverContracts(withFutureKey, "testnet", "2026-01-01T00:00:00.000Z");
+    expect(report).toEqual(baseline);
+    expect(report.contracts).toHaveLength(ALL_KEYS.length);
+    expect(report.contracts.map((c) => c.key)).not.toContain("futureToken");
+  });
+
+  it("does not leak the unknown key onto any entry", () => {
+    const report = discoverContracts(withFutureKey, "testnet", "2026-01-01T00:00:00.000Z");
+    for (const entry of report.contracts) {
+      expect(Object.keys(entry).sort()).toEqual(["configured", "contractId", "key", "package", "role"]);
+    }
+  });
+});

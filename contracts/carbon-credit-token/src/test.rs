@@ -1821,3 +1821,88 @@ fn test_append_retirement_receipt_rejects_unapproved_beneficiary_address() {
     assert_eq!(h.token.retirement_count(), before_count + 2);
     assert_eq!(receipt2.beneficiary_address, Some(approved_addr));
 }
+
+// ── Issue batch #962–#964: receipt API boundary coverage ─────────────────────
+#[test]
+fn test_verify_receipt_first_last_and_out_of_range_indices() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &30);
+    h.env.ledger().with_mut(|li| li.timestamp = 1_700_000_000);
+
+    do_retire(&h, &alice, 10);
+    do_retire(&h, &alice, 20);
+
+    let first = h.token.verify_receipt(&0);
+    let last = h.token.verify_receipt(&1);
+    let after_last = h.token.verify_receipt(&2);
+
+    assert!(first.valid);
+    assert_eq!(first.index, 0);
+    assert_eq!(first.amount, 10);
+    assert!(last.valid);
+    assert_eq!(last.index, 1);
+    assert_eq!(last.amount, 20);
+    assert!(!after_last.valid);
+    assert_eq!(after_last.index, 2);
+    assert_eq!(after_last.amount, 0);
+}
+
+#[test]
+fn test_get_receipts_partial_final_page_is_ordered_and_bounded() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &150);
+    h.env.ledger().with_mut(|li| li.timestamp = 1_700_000_000);
+
+    for amount in [10, 20, 30, 40, 50] {
+        do_retire(&h, &alice, amount);
+    }
+
+    let mut all = soroban_sdk::Vec::new(&h.env);
+    for (start, limit) in [(0, 2), (2, 2), (4, 2)] {
+        let page = h.token.get_receipts(&start, &limit);
+        for i in 0..page.len() {
+            all.push_back(page.get(i).unwrap());
+        }
+    }
+    let past_end = h.token.get_receipts(&5, &2);
+
+    assert_eq!(all.len(), 5);
+    for (i, expected) in [10, 20, 30, 40, 50].iter().enumerate() {
+        assert_eq!(all.get(i as u32).unwrap().amount, *expected);
+    }
+    assert_eq!(past_end.len(), 0);
+}
+
+#[test]
+fn test_retirement_receipt_preserves_distinct_beneficiary_metadata() {
+    let h = setup();
+    let retiree = Address::generate(&h.env);
+    let beneficiary = Address::generate(&h.env);
+    h.approve_kyc(&retiree);
+    h.approve_kyc(&beneficiary);
+    h.token.mint(&retiree, &25);
+    h.env.ledger().with_mut(|li| li.timestamp = 1_700_000_000);
+
+    let reason = String::from_str(&h.env, "beneficiary offset");
+    h.token
+        .retire_on_behalf(&retiree, &beneficiary, &25, &reason);
+
+    let by_index = h.token.get_receipt(&0);
+    let by_beneficiary = h
+        .token
+        .get_receipts_by_beneficiary(&beneficiary, &0, &1);
+    let queried = by_beneficiary.get(0).unwrap();
+
+    assert_eq!(by_index.retiree, retiree);
+    assert_eq!(by_index.amount, 25);
+    assert_eq!(by_index.beneficiary_address, Some(beneficiary.clone()));
+    assert_eq!(by_index.retirement_reason, reason);
+    assert_eq!(queried.retiree, by_index.retiree);
+    assert_eq!(queried.amount, by_index.amount);
+    assert_eq!(queried.beneficiary_address, by_index.beneficiary_address);
+    assert_eq!(queried.retirement_reason, by_index.retirement_reason);
+}

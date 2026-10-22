@@ -148,8 +148,9 @@ A React + Vite dashboard ships with the kit, wired to Freighter wallet and the S
 
 Copy `frontend/.env.example` to `frontend/.env` and fill in your deployed contract IDs to connect the UI to any network.
 
----
+For the carbon-credit unit convention, supply lifecycle, retirement behavior, and receipt lookup API, see [docs/carbon-credit-token.md](docs/carbon-credit-token.md). One on-chain token unit represents one metric tonne of CO2e, with `decimals() == 0`.
 
+---
 ## Extending Veritoken
 
 The kit is designed to be forked and customised:
@@ -249,6 +250,7 @@ Veritoken/
 | [docs/community-showcase.md](docs/community-showcase.md) | Community integrations, extensions, and reference implementations built on Veritoken |
 | [docs/gas-report.md](docs/gas-report.md) | Baseline gas and performance measurements |
 | [docs/security-checklist.md](docs/security-checklist.md) | Security review checklist and hardening playbook |
+| [docs/carbon-credit-token.md](docs/carbon-credit-token.md) | Carbon-credit units, supply lifecycle, retirement semantics, and receipt lookup |
 | [sdk/README.md](sdk/README.md) | TypeScript SDK guide: getting started, multi-network configuration, per-contract reference, error/event handling, adding a new contract client |
 
 ---

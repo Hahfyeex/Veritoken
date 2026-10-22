@@ -589,7 +589,13 @@ export default function AdminPage() {
                 No addresses are currently blocked.
               </p>
             ) : (
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.82rem", marginBottom: "1.25rem" }}>
+              <div
+                role="region"
+                aria-label="Blocked addresses"
+                tabIndex={0}
+                style={{ overflowX: "auto", maxWidth: "100%", marginBottom: "1.25rem" }}
+              >
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.82rem" }}>
                 <thead>
                   <tr style={{ borderBottom: "1px solid var(--border)", textAlign: "left" }}>
                     <th style={th}>Address</th>
@@ -619,6 +625,7 @@ export default function AdminPage() {
                   ))}
                 </tbody>
               </table>
+              </div>
             )}
 
             <WalletGuard>

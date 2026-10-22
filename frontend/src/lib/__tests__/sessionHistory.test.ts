@@ -1,8 +1,11 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { useSessionHistory, recordSessionAction } from "../sessionHistory";
+import { useNotificationStore } from "../notificationStore";
+import { useWallet } from "../wallet";
 
 beforeEach(() => {
   useSessionHistory.getState().clear();
+  useNotificationStore.getState().clearAll();
   sessionStorage.clear();
 });
 
@@ -63,5 +66,31 @@ describe("sessionHistory store", () => {
     expect(raw).toBeTruthy();
     const parsed = JSON.parse(raw as string);
     expect(parsed.state.entries).toHaveLength(1);
+  });
+});
+
+describe("sessionHistory clear() isolation", () => {
+  it("clears only the history, leaving notifications and wallet state untouched", () => {
+    recordSessionAction("wallet", "Wallet connected");
+    recordSessionAction("form_submission", "Form submitted");
+    useNotificationStore.getState().push({
+      title: "KYC Approved",
+      message: "Address approved at tier 1.",
+      severity: "info",
+      category: "kyc",
+    });
+
+    const notificationsBefore = useNotificationStore.getState().notifications;
+    const unreadBefore = useNotificationStore.getState().unreadCount;
+    const walletBefore = { ...useWallet.getState() };
+
+    useSessionHistory.getState().clear();
+
+    expect(useSessionHistory.getState().entries).toEqual([]);
+    expect(useNotificationStore.getState().notifications).toBe(notificationsBefore);
+    expect(useNotificationStore.getState().notifications).toHaveLength(1);
+    expect(useNotificationStore.getState().notifications[0].title).toBe("KYC Approved");
+    expect(useNotificationStore.getState().unreadCount).toBe(unreadBefore);
+    expect(useWallet.getState()).toEqual(walletBefore);
   });
 });

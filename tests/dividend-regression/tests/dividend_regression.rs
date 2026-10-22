@@ -419,6 +419,89 @@ fn invariant_i8_rent_and_capital_tracked_separately() {
     assert_eq!(h.token.claim_dividend(&alice), 0);
 }
 
+// ── Issue regressions #951, #954, #955, and #957 ─────────────────────────────
+
+/// #951: depositing before any shares are minted has an explicit, auditable
+/// result. The authorized share supply is valid, but there are no active
+/// holders yet, so the deposit remains in the pool and no holder accrues it.
+#[test]
+fn issue_951_dividend_deposit_before_first_mint_is_recorded_without_payout() {
+    let h = setup(1_000);
+
+    assert_eq!(h.token.holder_count(), 0);
+    assert_eq!(h.token.dividend_pool(), 0);
+
+    h.token.deposit_dividend(&1_000, &DIST_OTHER);
+
+    assert_eq!(h.token.dividend_pool(), 1_000);
+    assert_eq!(h.token.dividend_deposit_count(), 1);
+    let history = h.token.get_dividend_history(&0, &10);
+    assert_eq!(history.len(), 1);
+    assert_eq!(history.get(0).unwrap().amount, 1_000);
+}
+
+/// #954: a holder minted after a distribution must not inherit the historical
+/// round, but must participate in distributions deposited after joining.
+#[test]
+fn issue_954_late_minted_holder_gets_only_future_dividends() {
+    let h = setup(2_000);
+    let alice = h.new_holder();
+    let bob = h.new_holder();
+
+    h.token.mint(&alice, &1_000);
+    h.token.deposit_dividend(&1_000, &DIST_OTHER);
+
+    h.token.mint(&bob, &1_000);
+    assert_eq!(h.token.pending_dividend(&alice), 500);
+    assert_eq!(h.token.pending_dividend(&bob), 0);
+
+    h.token.deposit_dividend(&2_000, &DIST_OTHER);
+    assert_eq!(h.token.pending_dividend(&alice), 1_500);
+    assert_eq!(h.token.pending_dividend(&bob), 1_000);
+}
+
+/// #955: a transfer changes the recipient of future distributions without
+/// rewriting the sender's entitlement from the earlier distribution.
+#[test]
+fn issue_955_transfer_between_distributions_preserves_each_round() {
+    let h = setup(1_000);
+    let alice = h.new_holder();
+    let bob = h.new_holder();
+
+    h.token.mint(&alice, &1_000);
+    h.token.deposit_dividend(&1_000, &DIST_OTHER);
+    h.token.transfer(&alice, &bob, &400);
+    h.token.deposit_dividend(&1_000, &DIST_OTHER);
+
+    assert_eq!(h.token.pending_dividend(&alice), 1_600);
+    assert_eq!(h.token.pending_dividend(&bob), 400);
+}
+
+/// #957: removing a holder at zero balance and reacquiring later must restore
+/// exactly one active membership, never a duplicate.
+#[test]
+fn issue_957_holder_reacquisition_restores_single_membership() {
+    let h = setup(100);
+    let alice = h.new_holder();
+    let bob = h.new_holder();
+
+    h.token.mint(&alice, &100);
+    h.token.transfer(&alice, &bob, &100);
+    assert_eq!(h.token.holder_count(), 1);
+    assert!(!h.token.is_holder(&alice));
+    assert!(h.token.is_holder(&bob));
+
+    h.token.transfer(&bob, &alice, &100);
+    assert_eq!(h.token.holder_count(), 1);
+    assert!(h.token.is_holder(&alice));
+    assert!(!h.token.is_holder(&bob));
+
+    // The legacy enumeration is allowed to be empty on a fresh v2 instance,
+    // but it must never contain duplicate entries if it is populated.
+    let holders = h.token.get_holders(&0, &50);
+    assert!(holders.len() <= 1);
+}
+
 /// Capital claim does not drain rent bucket.
 #[test]
 fn invariant_i8_capital_claim_does_not_drain_rent() {

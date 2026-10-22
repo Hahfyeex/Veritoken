@@ -4,11 +4,11 @@
  * Contract functions covered:
  *   Read:  asset_type, kyc_registry, compliance_engine, get_compliance_metadata,
  *          get_token_export, get_external_uri
- *   Write: set_external_uri
+ *   Write: set_external_uri, batch_transfer
  */
 
 import type { rpc } from "@stellar/stellar-sdk";
-import { nativeToScVal } from "@stellar/stellar-sdk";
+import { nativeToScVal, xdr } from "@stellar/stellar-sdk";
 import type { TokenExportMetadata, KycSyncStatus } from "../../types";
 import {
   readCall,
@@ -16,8 +16,23 @@ import {
   fetchSequence,
   toAddress,
   toString,
+  toI128,
   type SignTx,
 } from "./base";
+
+/** One leg of a `batch_transfer` call (mirrors the contract's `RecipientEntry`). */
+export interface BatchRecipient {
+  to: string;
+  amount: bigint;
+}
+
+/** Encode a `RecipientEntry` struct as a Soroban map with sorted symbol keys. */
+function toRecipientEntry({ to, amount }: BatchRecipient): xdr.ScVal {
+  return xdr.ScVal.scvMap([
+    new xdr.ScMapEntry({ key: xdr.ScVal.scvSymbol("amount"), val: toI128(amount) }),
+    new xdr.ScMapEntry({ key: xdr.ScVal.scvSymbol("to"), val: toAddress(to) }),
+  ]);
+}
 
 export class RwaTokenClient {
   constructor(
@@ -155,6 +170,29 @@ export class RwaTokenClient {
       "set_external_uri",
       [toString(uri)],
       adminAddress,
+      seq,
+      signTx
+    );
+  }
+
+  /**
+   * Atomic batch transfer from `fromAddress` to up to 10 recipients.
+   *
+   * The contract validates every leg (KYC, compliance, balance) before moving
+   * any funds, so either all transfers land or the whole batch is rejected.
+   */
+  async batchTransfer(
+    fromAddress: string,
+    recipients: BatchRecipient[],
+    signTx: SignTx
+  ): Promise<void> {
+    const seq = await fetchSequence(this.server, fromAddress);
+    await writeCall(
+      this.server,
+      this.contractId,
+      "batch_transfer",
+      [toAddress(fromAddress), xdr.ScVal.scvVec(recipients.map(toRecipientEntry))],
+      fromAddress,
       seq,
       signTx
     );

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { nativeToScVal, Contract } from "@stellar/stellar-sdk";
+import { nativeToScVal, Contract, type rpc } from "@stellar/stellar-sdk";
 import { parseEvent, parseEvents, filterByName, type ParsedEvent } from "./eventParser.js";
 
 const CONTRACT_ID = "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA";
@@ -202,6 +202,106 @@ describe("parseEvents / filterByName", () => {
   });
 });
 
+describe("parseEvents — unknown topic in a mixed page (#979)", () => {
+  // Documented behaviour: an unrecognised topic is *preserved* as an
+  // UnknownParsedEvent (known: false, raw data), never skipped or dropped.
+  const page = () => [
+    rawEvent(["transfer", ALICE, BOB], [nativeToScVal(10n, { type: "i128" }), nativeToScVal(1n, { type: "u64" })], { id: "1-0", pagingToken: "1-0" }),
+    rawEvent(["zz_future", ALICE], [nativeToScVal(7n, { type: "u64" }), nativeToScVal("extra", { type: "string" })], { id: "2-0", pagingToken: "2-0" }),
+    rawEvent(["mint", BOB], [nativeToScVal(20n, { type: "i128" }), nativeToScVal(2n, { type: "u64" })], { id: "3-0", pagingToken: "3-0" }),
+  ];
+
+  it("preserves the unknown event in place with its raw topics and data", () => {
+    const events = parseEvents(page());
+    expect(events.map((e) => e.id)).toEqual(["1-0", "2-0", "3-0"]);
+
+    const unknown = events[1];
+    expect(unknown.known).toBe(false);
+    expect(unknown.name).toBe("zz_future");
+    expect(unknown.topics).toEqual([ALICE]);
+    expect(unknown.data).toEqual([7n, "extra"]);
+    expect(unknown.pagingToken).toBe("2-0");
+  });
+
+  it("still fully decodes the neighbouring known events", () => {
+    const [transfer, , mint] = parseEvents(page());
+
+    expect(transfer.known).toBe(true);
+    if (transfer.known && transfer.name === "transfer") {
+      expect(transfer.data).toEqual({ from: ALICE, to: BOB, amount: 10n, timestamp: 1n });
+    } else {
+      throw new Error("expected a known transfer event");
+    }
+
+    expect(mint.known).toBe(true);
+    if (mint.known && mint.name === "mint") {
+      expect(mint.data).toEqual({ to: BOB, amount: 20n, timestamp: 2n });
+    } else {
+      throw new Error("expected a known mint event");
+    }
+  });
+
+  it("is excluded from filterByName results for known names", () => {
+    const events = parseEvents(page());
+    expect(filterByName(events, "transfer").map((e) => e.id)).toEqual(["1-0"]);
+    expect(filterByName(events, "mint").map((e) => e.id)).toEqual(["3-0"]);
+  });
+});
+
+describe("parseEvents — empty event page (#978)", () => {
+  // Same shape `rpc.Server.getEvents` resolves with when a cursor has no new events.
+  const emptyPage = (): rpc.Api.GetEventsResponse => ({ latestLedger: 20_000, events: [] });
+
+  it("returns an empty array without throwing", () => {
+    const response = emptyPage();
+    expect(() => parseEvents(response.events)).not.toThrow();
+    const parsed = parseEvents(response.events);
+    expect(parsed).toEqual([]);
+    expect(filterByName(parsed, "transfer")).toEqual([]);
+  });
+
+  it("emits no paging token, so a poller's cursor is not advanced", () => {
+    const previousCursor = "12345-0";
+    const response = emptyPage();
+    const parsed = parseEvents(response.events);
+
+    // Pollers resume from the last parsed event's pagingToken; with no events
+    // there is nothing to advance to, so the existing cursor must be reused.
+    const nextCursor = parsed.length > 0 ? parsed[parsed.length - 1].pagingToken : previousCursor;
+    expect(nextCursor).toBe(previousCursor);
+    // The RPC page itself is left untouched — no synthetic events are injected.
+    expect(response).toEqual({ latestLedger: 20_000, events: [] });
+  });
+});
+
 // Type-level check: ParsedEvent should be assignable from parseEvent's return.
 const _typeCheck: ParsedEvent = parseEvent(rawEvent(["mint", ALICE], [nativeToScVal(1n, { type: "i128" }), nativeToScVal(1n, { type: "u64" })]));
 void _typeCheck;
+
+// Cross-reference against contracts/rwa-token/src/events.rs (#980). Fixtures use the
+// ScVal types the contract publishes (Symbol name, Address topics, typed data tuple)
+// and assert decoded field names in declaration order. adm_set, rcv_exe and migrated
+// are tracked under #686 and intentionally not repeated here.
+describe("parseEvent — contract event alignment (#980)", () => {
+  it("transfer matches emit_transfer: topics (from, to), data (amount: i128, ts: u64)", () => {
+    const e = parseEvent(rawEvent(
+      [nativeToScVal("transfer", { type: "symbol" }), nativeToScVal(ALICE, { type: "address" }), nativeToScVal(BOB, { type: "address" })],
+      [nativeToScVal(500n, { type: "i128" }), nativeToScVal(1_700_000_000n, { type: "u64" })],
+    ))!;
+    expect(e).toMatchObject({ known: true, name: "transfer" });
+    expect(e.topics).toEqual([ALICE, BOB]);
+    expect(Object.keys(e.data as object)).toEqual(["from", "to", "amount", "timestamp"]);
+    expect(e.data).toEqual({ from: ALICE, to: BOB, amount: 500n, timestamp: 1_700_000_000n });
+  });
+
+  it("role_set matches emit_role_assigned: no extra topics, data (role: Symbol, holder: Address, nonce: u64)", () => {
+    const e = parseEvent(rawEvent(
+      [nativeToScVal("role_set", { type: "symbol" })],
+      [nativeToScVal("verifier", { type: "symbol" }), nativeToScVal(ALICE, { type: "address" }), nativeToScVal(7n, { type: "u64" })],
+    ))!;
+    expect(e).toMatchObject({ known: true, name: "role_set" });
+    expect(e.topics).toEqual([]);
+    expect(Object.keys(e.data as object)).toEqual(["role", "holder", "nonce"]);
+    expect(e.data).toEqual({ role: "verifier", holder: ALICE, nonce: 7n });
+  });
+});
